@@ -405,7 +405,11 @@ if ( ! defined( __NAMESPACE__ . '\PO_META_ETA_DATE' ) ) {
 	define( __NAMESPACE__ . '\PO_META_ETA_DATE', '_lpr_eta_date' ); // Y-m-d
 }
 if ( ! defined( __NAMESPACE__ . '\PO_META_LINES' ) ) {
-	define( __NAMESPACE__ . '\PO_META_LINES', '_lpr_po_lines' );
+        define( __NAMESPACE__ . '\PO_META_LINES', '_lpr_po_lines' );
+}
+if ( ! defined( __NAMESPACE__ . '\PO_META_ALLOCATIONS_INDEX' ) ) {
+        // Map of order_id:item_id => {order_id,item_id,product_id,variation_id,qty,order_status,status,updated_at} for each PO.
+        define( __NAMESPACE__ . '\PO_META_ALLOCATIONS_INDEX', '_lpr_po_allocations_index' );
 }
 if ( ! defined( __NAMESPACE__ . '\PO_STATUS_OPEN' ) ) {
 	define( __NAMESPACE__ . '\PO_STATUS_OPEN', 'open' );
@@ -783,15 +787,16 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_CPT' ) ) {
 				}
 			}
 
-			// Lines save.
-			if ( isset( $_POST['lpr_po_lines_nonce'] ) && wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['lpr_po_lines_nonce'] ) ), 'lpr_po_lines_action' ) ) {
-				$raw_lines = isset( $_POST['lpr_po_lines'] ) ? (array) $_POST['lpr_po_lines'] : array();
-				$clean     = array();
+                        // Lines save.
+                        if ( isset( $_POST['lpr_po_lines_nonce'] ) && wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['lpr_po_lines_nonce'] ) ), 'lpr_po_lines_action' ) ) {
+                                $raw_lines   = isset( $_POST['lpr_po_lines'] ) ? (array) $_POST['lpr_po_lines'] : array();
+                                $clean       = array();
+                                $index_total = lpr_allocator_get_po_allocation_totals( $post_id );
 
-				foreach ( $raw_lines as $row ) {
-					$product_id   = isset( $row['product_id'] ) ? absint( $row['product_id'] ) : 0;
-					$variation_id = isset( $row['variation_id'] ) ? absint( $row['variation_id'] ) : 0;
-					$qty_ordered  = isset( $row['qty_ordered'] ) ? max( 0, (int) $row['qty_ordered'] ) : 0;
+                                foreach ( $raw_lines as $row ) {
+                                        $product_id   = isset( $row['product_id'] ) ? absint( $row['product_id'] ) : 0;
+                                        $variation_id = isset( $row['variation_id'] ) ? absint( $row['variation_id'] ) : 0;
+                                        $qty_ordered  = isset( $row['qty_ordered'] ) ? max( 0, (int) $row['qty_ordered'] ) : 0;
 					$qty_alloc    = isset( $row['qty_allocated'] ) ? max( 0, (int) $row['qty_allocated'] ) : 0;
 					$eta_override = isset( $row['eta_override'] ) ? lpr_allocator_sanitize_ymd( wp_unslash( $row['eta_override'] ) ) : '';
 					$qty_recv     = isset( $row['qty_received'] ) ? max( 0, (int) $row['qty_received'] ) : 0;
@@ -802,19 +807,23 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_CPT' ) ) {
 						continue;
 					}
 
-					// Clamp allocations/received to ordered.
-					if ( $qty_ordered > 0 ) {
-						$qty_alloc = min( $qty_alloc, $qty_ordered );
-						$qty_recv  = min( $qty_recv, $qty_ordered );
-					} else {
-						$qty_alloc = 0;
-						$qty_recv  = 0;
-					}
+                                        $map_key      = $variation_id > 0 ? 'v:' . $variation_id : 'p:' . $product_id;
+                                        $index_alloc  = $map_key && isset( $index_total[ $map_key ] ) ? (int) $index_total[ $map_key ] : 0;
 
-					$line = array(
-						'qty_ordered'   => $qty_ordered,
-						'qty_allocated' => $qty_alloc,
-						'eta_override'  => $eta_override,
+                                        // Clamp allocations/received to ordered and prefer the ledger-backed total.
+                                        $qty_alloc = $index_alloc;
+                                        if ( $qty_ordered > 0 ) {
+                                                $qty_alloc = min( $qty_alloc, $qty_ordered );
+                                                $qty_recv  = min( $qty_recv, $qty_ordered );
+                                        } else {
+                                                $qty_alloc = 0;
+                                                $qty_recv  = 0;
+                                        }
+
+                                        $line = array(
+                                                'qty_ordered'   => $qty_ordered,
+                                                'qty_allocated' => $qty_alloc,
+                                                'eta_override'  => $eta_override,
 						'qty_received'  => $qty_recv,
 					);
 
@@ -867,16 +876,11 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_CPT' ) ) {
 					}
 					echo esc_html( (string) count( $lines ) );
 					break;
-				case 'allocated':
-					$lines = get_post_meta( $post_id, PO_META_LINES, true );
-					$sum   = 0;
-					if ( is_array( $lines ) ) {
-						foreach ( $lines as $l ) {
-							$sum += isset( $l['qty_allocated'] ) ? max( 0, (int) $l['qty_allocated'] ) : 0;
-						}
-					}
-					echo esc_html( (string) $sum );
-					break;
+                                case 'allocated':
+                                        $totals = lpr_allocator_get_po_allocation_totals( $post_id );
+                                        $sum    = is_array( $totals ) ? array_sum( array_map( 'intval', $totals ) ) : 0;
+                                        echo esc_html( (string) max( 0, (int) $sum ) );
+                                        break;
 				case 'po_status':
 					$st = get_post_status( $post_id );
 					$obj = get_post_status_object( $st );
@@ -1694,10 +1698,10 @@ if ( ! is_admin() && ! wp_doing_cron() ) {
 }
 
 if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_calc_backorder_need' ) ) {
-	/**
-	 * Calculate remaining backordered qty for an order item (ledger-aware).
-	 * Uses item meta "Backordered" when present; otherwise assumes full line qty if product reports on-backorder.
-	 *
+        /**
+         * Calculate remaining backordered qty for an order item (ledger-aware).
+         * Uses item meta "Backordered" when present; otherwise assumes full line qty if product reports on-backorder.
+         *
 	 * @param \WC_Order_Item_Product $item
 	 * @return int Remaining units needing allocation (>=0).
 	 */
@@ -1740,13 +1744,134 @@ if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_calc_backorder_need' ) )
 		// Hard cap to line item qty for safety.
 		$need = min( $need, $qty );
 
-		return $need;
-	}
+                return $need;
+        }
+}
+
+if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_get_po_allocation_totals' ) ) {
+        /**
+         * Summarize active allocations for a PO based on its allocation index and current order/item state.
+         * Returns a map of "p:<product_id>" or "v:<variation_id>" to summed qty.
+         */
+        function lpr_allocator_get_po_allocation_totals( int $po_id ): array {
+                $index_key = defined( __NAMESPACE__ . '\PO_META_ALLOCATIONS_INDEX' ) ? PO_META_ALLOCATIONS_INDEX : '_lpr_po_allocations_index';
+                $index     = get_post_meta( $po_id, $index_key, true );
+                if ( ! is_array( $index ) ) {
+                        $index = array();
+                }
+
+                $meta_key_allocs = defined( __NAMESPACE__ . '\ORDER_ITEM_META_ALLOCATIONS' ) ? ORDER_ITEM_META_ALLOCATIONS : 'lpr_allocations';
+                $ignore_statuses = array( 'cancelled', 'refunded', 'failed', 'trash' );
+                $totals          = array();
+                $normalized      = array();
+                $now             = current_time( 'mysql' );
+
+                foreach ( $index as $key => $row ) {
+                        $order_id = isset( $row['order_id'] ) ? absint( $row['order_id'] ) : 0;
+                        $item_id  = isset( $row['item_id'] ) ? absint( $row['item_id'] ) : 0;
+                        if ( $order_id <= 0 || $item_id <= 0 ) {
+                                continue;
+                        }
+
+                        $order = function_exists( 'wc_get_order' ) ? wc_get_order( $order_id ) : null;
+                        if ( ! ( $order instanceof \WC_Order ) ) {
+                                continue;
+                        }
+
+                        $order_status = sanitize_key( (string) $order->get_status() );
+                        $item         = $order->get_item( $item_id );
+                        if ( ! ( $item instanceof \WC_Order_Item_Product ) ) {
+                                continue;
+                        }
+
+                        $alloc_qty = 0;
+                        $allocs    = $item->get_meta( $meta_key_allocs, true );
+                        if ( is_array( $allocs ) ) {
+                                foreach ( $allocs as $alloc_row ) {
+                                        $row_po   = isset( $alloc_row['po_id'] ) ? (int) $alloc_row['po_id'] : 0;
+                                        $row_stat = isset( $alloc_row['status'] ) ? sanitize_key( (string) $alloc_row['status'] ) : 'reserved';
+                                        if ( $po_id !== $row_po || 'released' === $row_stat ) {
+                                                continue;
+                                        }
+                                        $alloc_qty += isset( $alloc_row['qty_allocated'] ) ? max( 0, (int) $alloc_row['qty_allocated'] ) : 0;
+                                }
+                        }
+
+                        if ( $alloc_qty <= 0 ) {
+                                continue;
+                        }
+
+                        $vid     = (int) $item->get_variation_id();
+                        $pid     = (int) $item->get_product_id();
+                        $map_key = $vid > 0 ? 'v:' . $vid : 'p:' . $pid;
+                        $norm_key = $order_id . ':' . $item_id;
+
+                        $normalized[ $norm_key ] = array(
+                                'order_id'     => $order_id,
+                                'item_id'      => $item_id,
+                                'product_id'   => $pid,
+                                'variation_id' => $vid,
+                                'qty'          => $alloc_qty,
+                                'order_status' => $order_status,
+                                'status'       => 'reserved',
+                                'updated_at'   => $now,
+                        );
+
+                        if ( ! in_array( $order_status, $ignore_statuses, true ) ) {
+                                $totals[ $map_key ] = ( $totals[ $map_key ] ?? 0 ) + $alloc_qty;
+                        }
+                }
+
+                if ( $normalized !== $index ) {
+                        update_post_meta( $po_id, $index_key, $normalized );
+                }
+
+                return $totals;
+        }
+}
+
+if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_sync_po_allocation_totals' ) ) {
+        /**
+         * Refresh PO line qty_allocated fields from the allocation index totals.
+         */
+        function lpr_allocator_sync_po_allocation_totals( int $po_id ): void {
+                $lines = get_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_LINES' ) ? PO_META_LINES : '_lpr_po_lines', true );
+                if ( ! is_array( $lines ) || empty( $lines ) ) {
+                        return;
+                }
+
+                $totals  = lpr_allocator_get_po_allocation_totals( $po_id );
+                $changed = false;
+
+                foreach ( $lines as &$line ) {
+                        $product_id   = isset( $line['product_id'] ) ? absint( $line['product_id'] ) : 0;
+                        $variation_id = isset( $line['variation_id'] ) ? absint( $line['variation_id'] ) : 0;
+                        $qty_ordered  = isset( $line['qty_ordered'] ) ? max( 0, (int) $line['qty_ordered'] ) : 0;
+                        $map_key      = $variation_id > 0 ? 'v:' . $variation_id : 'p:' . $product_id;
+                        $alloc        = isset( $totals[ $map_key ] ) ? (int) $totals[ $map_key ] : 0;
+
+                        if ( $qty_ordered > 0 ) {
+                                $alloc = min( $alloc, $qty_ordered );
+                        }
+
+                        $alloc = max( 0, $alloc );
+
+                        if ( (int) ( $line['qty_allocated'] ?? 0 ) !== $alloc ) {
+                                $line['qty_allocated'] = $alloc;
+                                $changed               = true;
+                        }
+                }
+                unset( $line );
+
+                if ( $changed ) {
+                        update_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_LINES' ) ? PO_META_LINES : '_lpr_po_lines', $lines );
+                }
+        }
 }
 
 if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
-	/**
-	 * FIFO allocator that assigns PO quantities to backordered order items (ledger only).
+        /**
+         * FIFO allocator that assigns PO quantities to backordered order items (ledger only).
 	 */
 	class PO_FIFO_Allocator {
 
@@ -1814,7 +1939,8 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
 			$po_number = (string) get_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_PO_NUMBER' ) ? PO_META_PO_NUMBER : '_lpr_po_number', true );
 			$po_eta    = (string) get_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_ETA_DATE' ) ? PO_META_ETA_DATE : '_lpr_eta_date', true );
 
-			$affected_orders = array(); // order_id => true
+                        $affected_orders          = array(); // order_id => true
+                        $allocation_index_updates = array();
 
 			// Process each PO line independently with a per-SKU lock to avoid contention.
 			foreach ( $lines as $idx => $line ) {
@@ -1848,15 +1974,16 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
 				set_transient( $lock_key, 1, 60 ); // short-lived lock
 
 				try {
-					$allocated_total = self::allocate_for_single_line(
-						$po_id,
-						$po_number,
-						$po_eta,
-						$target_id,
-						$remaining_for_line,
-						$eta_override,
-						$affected_orders
-					);
+                                        $allocated_total = self::allocate_for_single_line(
+                                                $po_id,
+                                                $po_number,
+                                                $po_eta,
+                                                $target_id,
+                                                $remaining_for_line,
+                                                $eta_override,
+                                                $affected_orders,
+                                                $allocation_index_updates
+                                        );
 
 					// Increment line's qty_allocated and persist back to meta array.
 					if ( $allocated_total > 0 ) {
@@ -1867,8 +1994,16 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
 				}
 			}
 
-			// Persist updated lines only once.
-			update_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_LINES' ) ? PO_META_LINES : '_lpr_po_lines', $lines );
+                        // Persist updated lines only once.
+                        update_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_LINES' ) ? PO_META_LINES : '_lpr_po_lines', $lines );
+
+                        // Merge allocation index entries captured during this run.
+                        if ( ! empty( $allocation_index_updates ) ) {
+                                self::merge_allocation_index( $po_id, $allocation_index_updates );
+                        }
+
+                        // Sync qty_allocated from the allocation index to avoid reductions when orders leave the search scope.
+                        lpr_allocator_sync_po_allocation_totals( $po_id );
 
 			// Recompute ETAs for all affected orders (one pass).
 			if ( ! empty( $affected_orders ) && class_exists( __NAMESPACE__ . '\ETA' ) ) {
@@ -1878,19 +2013,65 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
 			}
 		}
 
-		/**
-		 * Allocate a single PO line across backordered order items in FIFO order.
-		 *
-		 * @param int      $po_id
-		 * @param string   $po_number
-		 * @param string   $po_eta_header
-		 * @param int      $target_product_or_variation_id
-		 * @param int      $remaining_for_line
-		 * @param string   $eta_override
-		 * @param string[] $affected_orders Reference accumulator.
-		 * @return int Total quantity allocated from this line.
-		 */
-		protected static function allocate_for_single_line( int $po_id, string $po_number, string $po_eta_header, int $target_product_or_variation_id, int $remaining_for_line, string $eta_override, array &$affected_orders ): int {
+                /**
+                 * Merge new allocation ledger entries into the per-PO index.
+                 *
+                 * @param int   $po_id
+                 * @param array $updates Map of order_id:item_id => row data.
+                 */
+                protected static function merge_allocation_index( int $po_id, array $updates ): void {
+                        if ( empty( $updates ) ) {
+                                return;
+                        }
+
+                        $meta_key = defined( __NAMESPACE__ . '\PO_META_ALLOCATIONS_INDEX' ) ? PO_META_ALLOCATIONS_INDEX : '_lpr_po_allocations_index';
+                        $existing = get_post_meta( $po_id, $meta_key, true );
+                        if ( ! is_array( $existing ) ) {
+                                $existing = array();
+                        }
+
+                        $now = current_time( 'mysql' );
+
+                        foreach ( $updates as $map_key => $row ) {
+                                $order_id = isset( $row['order_id'] ) ? absint( $row['order_id'] ) : 0;
+                                $item_id  = isset( $row['item_id'] ) ? absint( $row['item_id'] ) : 0;
+                                if ( $order_id <= 0 || $item_id <= 0 ) {
+                                        continue;
+                                }
+
+                                $order        = function_exists( 'wc_get_order' ) ? wc_get_order( $order_id ) : null;
+                                $order_status = $order instanceof \WC_Order ? sanitize_key( (string) $order->get_status() ) : '';
+                                $prev_qty     = isset( $existing[ $map_key ]['qty'] ) ? max( 0, (int) $existing[ $map_key ]['qty'] ) : 0;
+
+                                $existing[ $map_key ] = array(
+                                        'order_id'     => $order_id,
+                                        'item_id'      => $item_id,
+                                        'product_id'   => isset( $row['product_id'] ) ? absint( $row['product_id'] ) : 0,
+                                        'variation_id' => isset( $row['variation_id'] ) ? absint( $row['variation_id'] ) : 0,
+                                        'qty'          => $prev_qty + max( 0, (int) ( $row['qty'] ?? 0 ) ),
+                                        'order_status' => $order_status ? $order_status : ( isset( $existing[ $map_key ]['order_status'] ) ? sanitize_key( (string) $existing[ $map_key ]['order_status'] ) : '' ),
+                                        'status'       => 'reserved',
+                                        'updated_at'   => $now,
+                                );
+                        }
+
+                        update_post_meta( $po_id, $meta_key, $existing );
+                }
+
+                /**
+                 * Allocate a single PO line across backordered order items in FIFO order.
+                 *
+                 * @param int      $po_id
+                 * @param string   $po_number
+                 * @param string   $po_eta_header
+                 * @param int      $target_product_or_variation_id
+                 * @param int      $remaining_for_line
+                 * @param string   $eta_override
+                 * @param string[] $affected_orders          Reference accumulator.
+                 * @param array    $allocation_index_updates Reference accumulator for allocation index rows.
+                 * @return int Total quantity allocated from this line.
+                 */
+                protected static function allocate_for_single_line( int $po_id, string $po_number, string $po_eta_header, int $target_product_or_variation_id, int $remaining_for_line, string $eta_override, array &$affected_orders, array &$allocation_index_updates ): int {
 			if ( $remaining_for_line <= 0 ) {
 				return 0;
 			}
@@ -1968,13 +2149,27 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
 					$po_number ? $po_number : (string) $po_id,
 					$eta_display
 				);
-				$order->add_order_note( $note, false, true );
+                                $order->add_order_note( $note, false, true );
 
-				$affected_orders[ (int) $order->get_id() ] = true;
+                                $affected_orders[ (int) $order->get_id() ] = true;
 
-				$remaining_for_line -= $allocate_now;
-				$allocated_total    += $allocate_now;
-			}
+                                // Track which order/item the PO allocation served so future recalculations can stay in sync.
+                                $ledger_key = $order->get_id() . ':' . $target_item->get_id();
+                                if ( ! isset( $allocation_index_updates[ $ledger_key ] ) ) {
+                                        $allocation_index_updates[ $ledger_key ] = array(
+                                                'order_id'     => (int) $order->get_id(),
+                                                'item_id'      => (int) $target_item->get_id(),
+                                                'product_id'   => (int) $target_item->get_product_id(),
+                                                'variation_id' => (int) $target_item->get_variation_id(),
+                                                'qty'          => (int) $allocate_now,
+                                        );
+                                } else {
+                                        $allocation_index_updates[ $ledger_key ]['qty'] += (int) $allocate_now;
+                                }
+
+                                $remaining_for_line -= $allocate_now;
+                                $allocated_total    += $allocate_now;
+                        }
 
 			return $allocated_total;
 		}
