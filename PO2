@@ -783,15 +783,31 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_CPT' ) ) {
 				}
 			}
 
-			// Lines save.
-			if ( isset( $_POST['lpr_po_lines_nonce'] ) && wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['lpr_po_lines_nonce'] ) ), 'lpr_po_lines_action' ) ) {
-				$raw_lines = isset( $_POST['lpr_po_lines'] ) ? (array) $_POST['lpr_po_lines'] : array();
-				$clean     = array();
+                        // Lines save.
+                        if ( isset( $_POST['lpr_po_lines_nonce'] ) && wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['lpr_po_lines_nonce'] ) ), 'lpr_po_lines_action' ) ) {
+                                $raw_lines = isset( $_POST['lpr_po_lines'] ) ? (array) $_POST['lpr_po_lines'] : array();
+                                $clean     = array();
 
-				foreach ( $raw_lines as $row ) {
-					$product_id   = isset( $row['product_id'] ) ? absint( $row['product_id'] ) : 0;
-					$variation_id = isset( $row['variation_id'] ) ? absint( $row['variation_id'] ) : 0;
-					$qty_ordered  = isset( $row['qty_ordered'] ) ? max( 0, (int) $row['qty_ordered'] ) : 0;
+                                // Preserve the highest previously stored qty_allocated per product/variation to avoid
+                                // accidental reductions when a PO is re-saved after allocations have been made.
+                                $existing_lines      = get_post_meta( $post_id, PO_META_LINES, true );
+                                $prev_allocated_map  = array();
+                                if ( is_array( $existing_lines ) ) {
+                                        foreach ( $existing_lines as $existing_line ) {
+                                                $prev_pid   = isset( $existing_line['product_id'] ) ? absint( $existing_line['product_id'] ) : 0;
+                                                $prev_vid   = isset( $existing_line['variation_id'] ) ? absint( $existing_line['variation_id'] ) : 0;
+                                                $prev_alloc = isset( $existing_line['qty_allocated'] ) ? max( 0, (int) $existing_line['qty_allocated'] ) : 0;
+                                                $key        = $prev_vid > 0 ? 'v:' . $prev_vid : 'p:' . $prev_pid;
+                                                if ( $key ) {
+                                                        $prev_allocated_map[ $key ] = max( $prev_allocated_map[ $key ] ?? 0, $prev_alloc );
+                                                }
+                                        }
+                                }
+
+                                foreach ( $raw_lines as $row ) {
+                                        $product_id   = isset( $row['product_id'] ) ? absint( $row['product_id'] ) : 0;
+                                        $variation_id = isset( $row['variation_id'] ) ? absint( $row['variation_id'] ) : 0;
+                                        $qty_ordered  = isset( $row['qty_ordered'] ) ? max( 0, (int) $row['qty_ordered'] ) : 0;
 					$qty_alloc    = isset( $row['qty_allocated'] ) ? max( 0, (int) $row['qty_allocated'] ) : 0;
 					$eta_override = isset( $row['eta_override'] ) ? lpr_allocator_sanitize_ymd( wp_unslash( $row['eta_override'] ) ) : '';
 					$qty_recv     = isset( $row['qty_received'] ) ? max( 0, (int) $row['qty_received'] ) : 0;
@@ -802,19 +818,25 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_CPT' ) ) {
 						continue;
 					}
 
-					// Clamp allocations/received to ordered.
-					if ( $qty_ordered > 0 ) {
-						$qty_alloc = min( $qty_alloc, $qty_ordered );
-						$qty_recv  = min( $qty_recv, $qty_ordered );
-					} else {
-						$qty_alloc = 0;
-						$qty_recv  = 0;
-					}
+                                        // Clamp allocations/received to ordered.
+                                        if ( $qty_ordered > 0 ) {
+                                                $qty_alloc = min( $qty_alloc, $qty_ordered );
+                                                $qty_recv  = min( $qty_recv, $qty_ordered );
+                                        } else {
+                                                $qty_alloc = 0;
+                                                $qty_recv  = 0;
+                                        }
 
-					$line = array(
-						'qty_ordered'   => $qty_ordered,
-						'qty_allocated' => $qty_alloc,
-						'eta_override'  => $eta_override,
+                                        // Keep previously recorded allocations (unless manually cleared) so that
+                                        // allocations are not lost when orders move out of the configured status scope.
+                                        $map_key    = $variation_id > 0 ? 'v:' . $variation_id : 'p:' . $product_id;
+                                        $prev_alloc = $map_key && isset( $prev_allocated_map[ $map_key ] ) ? (int) $prev_allocated_map[ $map_key ] : 0;
+                                        $qty_alloc  = max( $qty_alloc, $prev_alloc );
+
+                                        $line = array(
+                                                'qty_ordered'   => $qty_ordered,
+                                                'qty_allocated' => $qty_alloc,
+                                                'eta_override'  => $eta_override,
 						'qty_received'  => $qty_recv,
 					);
 
