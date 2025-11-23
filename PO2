@@ -2643,7 +2643,195 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_Allocate_Button_UI' ) ) {
 			}
 		}
 	}
-	PO_Allocate_Button_UI::init();
+        PO_Allocate_Button_UI::init();
+}
+
+if ( ! class_exists( __NAMESPACE__ . '\PO_Allocation_Overview' ) ) {
+        /**
+         * Supplier PO metabox: lists orders served by this PO.
+         */
+        class PO_Allocation_Overview {
+
+                public static function init(): void {
+                        add_action( 'add_meta_boxes', array( __CLASS__, 'register_box' ), 30 );
+                }
+
+                public static function register_box(): void {
+                        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+                                return;
+                        }
+
+                        add_meta_box(
+                                'lpr_po_allocation_overview',
+                                __( 'PO Allocation Overview', 'lpr-backorder-allocator' ),
+                                array( __CLASS__, 'render_box' ),
+                                defined( __NAMESPACE__ . '\CPT_SUPPLIER_PO' ) ? CPT_SUPPLIER_PO : 'supplier_po',
+                                'normal',
+                                'default'
+                        );
+                }
+
+                /**
+                 * Collect allocation rows for this PO from the allocation index.
+                 *
+                 * @param int $po_id
+                 * @return array<int, array<string, mixed>>
+                 */
+                protected static function collect_rows( int $po_id ): array {
+                        if ( $po_id <= 0 || ! function_exists( __NAMESPACE__ . '\lpr_allocator_get_po_allocation_index' ) ) {
+                                return array();
+                        }
+
+                        $index = lpr_allocator_get_po_allocation_index( $po_id );
+                        if ( empty( $index ) ) {
+                                return array();
+                        }
+
+                        $rows      = array();
+                        $exclude   = array( 'trash' );
+                        $po_eta    = lpr_allocator_sanitize_ymd( (string) get_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_ETA_DATE' ) ? PO_META_ETA_DATE : '_lpr_eta_date', true ) );
+                        $meta_key  = defined( __NAMESPACE__ . '\ORDER_ITEM_META_ALLOCATIONS' ) ? ORDER_ITEM_META_ALLOCATIONS : 'lpr_allocations';
+
+                        foreach ( $index as $entry ) {
+                                $order_id = isset( $entry['order_id'] ) ? absint( $entry['order_id'] ) : 0;
+                                $item_id  = isset( $entry['item_id'] ) ? absint( $entry['item_id'] ) : 0;
+                                if ( $order_id <= 0 || $item_id <= 0 ) {
+                                        continue;
+                                }
+
+                                $order = wc_get_order( $order_id );
+                                if ( ! ( $order instanceof \WC_Order ) ) {
+                                        continue;
+                                }
+                                if ( $order->has_status( $exclude ) ) {
+                                        continue;
+                                }
+
+                                $item = $order->get_item( $item_id );
+                                if ( ! ( $item instanceof \WC_Order_Item_Product ) ) {
+                                        continue;
+                                }
+                                if ( method_exists( $item, 'read_meta_data' ) ) {
+                                        $item->read_meta_data( true );
+                                }
+
+                                $allocs = $item->get_meta( $meta_key, true );
+                                if ( ! is_array( $allocs ) ) {
+                                        continue;
+                                }
+
+                                $qty_allocated = 0;
+                                $eta_row       = '';
+                                foreach ( $allocs as $row ) {
+                                        $row_po_id = isset( $row['po_id'] ) ? absint( $row['po_id'] ) : 0;
+                                        if ( $row_po_id !== $po_id ) {
+                                                continue;
+                                        }
+
+                                        $status = isset( $row['status'] ) ? sanitize_key( (string) $row['status'] ) : 'reserved';
+                                        if ( 'released' === $status ) {
+                                                continue;
+                                        }
+
+                                        $row_qty = isset( $row['qty_allocated'] ) ? max( 0, (int) $row['qty_allocated'] ) : 0;
+                                        if ( $row_qty <= 0 ) {
+                                                continue;
+                                        }
+
+                                        $qty_allocated += $row_qty;
+
+                                        if ( ! empty( $row['eta'] ) ) {
+                                                $candidate_eta = lpr_allocator_sanitize_ymd( (string) $row['eta'] );
+                                                $eta_row       = self::earliest_eta( $eta_row, $candidate_eta );
+                                        }
+                                }
+
+                                if ( $qty_allocated <= 0 ) {
+                                        continue;
+                                }
+
+                                $order_url  = method_exists( $order, 'get_edit_order_url' ) ? $order->get_edit_order_url() : get_edit_post_link( $order_id, 'url' );
+                                $order_no   = method_exists( $order, 'get_order_number' ) ? $order->get_order_number() : (string) $order_id;
+                                $full_name  = method_exists( $order, 'get_formatted_billing_full_name' ) ? $order->get_formatted_billing_full_name() : trim( $order->get_billing_first_name() . ' ' . $order->get_billing_last_name() );
+                                $product    = $item->get_name();
+                                $sku        = $item->get_product() instanceof \WC_Product ? $item->get_product()->get_sku() : '';
+                                $label      = $product;
+                                if ( $sku ) {
+                                        $label .= ' (' . $sku . ')';
+                                }
+
+                                $order_value = function_exists( 'wc_price' ) ? wc_price( $order->get_total(), array( 'currency' => $order->get_currency() ) ) : number_format_i18n( (float) $order->get_total(), 2 );
+                                $status_name = function_exists( 'wc_get_order_status_name' ) ? wc_get_order_status_name( $order->get_status() ) : $order->get_status();
+
+                                $rows[] = array(
+                                        'order_number' => $order_no,
+                                        'order_url'    => $order_url,
+                                        'customer'     => $full_name,
+                                        'product'      => $label,
+                                        'qty'          => $qty_allocated,
+                                        'order_value'  => $order_value,
+                                        'status'       => $status_name,
+                                        'eta'          => $eta_row ? $eta_row : $po_eta,
+                                );
+                        }
+
+                        return $rows;
+                }
+
+                protected static function earliest_eta( string $current, string $candidate ): string {
+                        if ( '' === $candidate ) {
+                                return $current;
+                        }
+                        if ( '' === $current ) {
+                                return $candidate;
+                        }
+                        return strcmp( $candidate, $current ) < 0 ? $candidate : $current;
+                }
+
+                public static function render_box( \WP_Post $post ): void {
+                        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+                                return;
+                        }
+
+                        $rows = self::collect_rows( (int) $post->ID );
+
+                        echo '<style>.lpr-po-alloc-overview{width:100%;border-collapse:collapse}.lpr-po-alloc-overview th,.lpr-po-alloc-overview td{border-bottom:1px solid #ddd;padding:6px;text-align:left;vertical-align:top}.lpr-po-alloc-overview th{white-space:nowrap}</style>';
+
+                        if ( empty( $rows ) ) {
+                                echo '<p>' . esc_html__( 'No allocations found for this PO.', 'lpr-backorder-allocator' ) . '</p>';
+                                return;
+                        }
+
+                        echo '<table class="widefat striped lpr-po-alloc-overview">';
+                        echo '<thead><tr>';
+                        echo '<th>' . esc_html__( 'Order', 'lpr-backorder-allocator' ) . '</th>';
+                        echo '<th>' . esc_html__( 'Customer', 'lpr-backorder-allocator' ) . '</th>';
+                        echo '<th>' . esc_html__( 'Product / Qty', 'lpr-backorder-allocator' ) . '</th>';
+                        echo '<th>' . esc_html__( 'Order Value', 'lpr-backorder-allocator' ) . '</th>';
+                        echo '<th>' . esc_html__( 'Status', 'lpr-backorder-allocator' ) . '</th>';
+                        echo '<th>' . esc_html__( 'ETA', 'lpr-backorder-allocator' ) . '</th>';
+                        echo '</tr></thead><tbody>';
+
+                        foreach ( $rows as $row ) {
+                                $order_link = ! empty( $row['order_url'] ) ? '<a href="' . esc_url( $row['order_url'] ) . '">' . esc_html( '#' . $row['order_number'] ) . '</a>' : esc_html( '#' . $row['order_number'] );
+                                $product    = esc_html( $row['product'] );
+                                $qty        = esc_html( (string) $row['qty'] );
+                                $eta        = $row['eta'] ? esc_html( $row['eta'] ) : '&#8211;';
+
+                                echo '<tr>';
+                                echo '<td>' . $order_link . '</td>';
+                                echo '<td>' . esc_html( $row['customer'] ) . '</td>';
+                                echo '<td>' . $product . ' &times; ' . $qty . '</td>';
+                                echo '<td>' . wp_kses_post( $row['order_value'] ) . '</td>';
+                                echo '<td>' . esc_html( $row['status'] ) . '</td>';
+                                echo '<td>' . $eta . '</td>';
+                                echo '</tr>';
+                        }
+
+                        echo '</tbody></table>';
+                }
+        }
+        PO_Allocation_Overview::init();
 }
 
 /* SELF-CHECK:
