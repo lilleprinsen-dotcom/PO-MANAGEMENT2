@@ -1,3 +1,5 @@
+<?php
+
 namespace LPR\Allocator;
 
 if ( ! is_admin() && ! wp_doing_cron() ) {
@@ -27,10 +29,13 @@ if ( ! defined( __NAMESPACE__ . '\PRODUCT_META_UNALLOCATED_POOL' ) ) {
 	define( __NAMESPACE__ . '\PRODUCT_META_UNALLOCATED_POOL', '_lpr_unallocated_pool' );
 }
 if ( ! defined( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_QTY' ) ) {
-	define( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_QTY', '_lpr_next_extra_qty' );
+        define( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_QTY', '_lpr_next_extra_qty' );
 }
 if ( ! defined( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_ETA' ) ) {
-	define( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_ETA', '_lpr_next_extra_eta' );
+        define( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_ETA', '_lpr_next_extra_eta' );
+}
+if ( ! defined( __NAMESPACE__ . '\PRODUCT_META_INCOMING_DETAILS' ) ) {
+        define( __NAMESPACE__ . '\PRODUCT_META_INCOMING_DETAILS', '_lpr_incoming_po_details' );
 }
 
 if ( ! class_exists( __NAMESPACE__ . '\Settings' ) ) {
@@ -45,15 +50,16 @@ if ( ! class_exists( __NAMESPACE__ . '\Settings' ) ) {
 		 * @return array
 		 */
 		public static function defaults(): array {
-			return array(
-				'order_statuses'        => array( 'processing', 'on-hold' ),
-				'inform_customer_eta'   => false,
-				'frontend_extra_pool'   => false,
-				'brand_logo_url'        => '',
-				'brand_primary_color'   => '#1a1a1a',
-				'brand_support_email'   => '',
-				'brand_support_phone'   => '',
-				'email_footer_text_no'  => '',
+                        return array(
+                                'order_statuses'        => array( 'processing', 'on-hold' ),
+                                'inform_customer_eta'   => false,
+                                'frontend_extra_pool'   => false,
+                                'frontend_refresh_interval' => 900,
+                                'brand_logo_url'        => '',
+                                'brand_primary_color'   => '#1a1a1a',
+                                'brand_support_email'   => '',
+                                'brand_support_phone'   => '',
+                                'email_footer_text_no'  => '',
 			);
 		}
 
@@ -114,12 +120,18 @@ if ( ! class_exists( __NAMESPACE__ . '\Settings' ) ) {
 			}
 
 			$inform = ! empty( $raw['inform_customer_eta'] );
-			$front  = ! empty( $raw['frontend_extra_pool'] );
+                        $front  = ! empty( $raw['frontend_extra_pool'] );
 
-			$logo   = isset( $raw['brand_logo_url'] ) ? esc_url_raw( $raw['brand_logo_url'] ) : '';
-			$color  = isset( $raw['brand_primary_color'] ) ? sanitize_hex_color( $raw['brand_primary_color'] ) : '';
-			if ( empty( $color ) ) {
-				$color = $defaults['brand_primary_color'];
+                        $allowed_intervals = array( 300, 900, 1800, 3600, 7200 );
+                        $interval         = isset( $raw['frontend_refresh_interval'] ) ? (int) $raw['frontend_refresh_interval'] : $defaults['frontend_refresh_interval'];
+                        if ( ! in_array( $interval, $allowed_intervals, true ) ) {
+                                $interval = $defaults['frontend_refresh_interval'];
+                        }
+
+                        $logo   = isset( $raw['brand_logo_url'] ) ? esc_url_raw( $raw['brand_logo_url'] ) : '';
+                        $color  = isset( $raw['brand_primary_color'] ) ? sanitize_hex_color( $raw['brand_primary_color'] ) : '';
+                        if ( empty( $color ) ) {
+                                $color = $defaults['brand_primary_color'];
 			}
 
 			$email  = isset( $raw['brand_support_email'] ) ? sanitize_email( $raw['brand_support_email'] ) : '';
@@ -127,14 +139,15 @@ if ( ! class_exists( __NAMESPACE__ . '\Settings' ) ) {
 			$footer = isset( $raw['email_footer_text_no'] ) ? wp_kses_post( $raw['email_footer_text_no'] ) : '';
 
 			return array(
-				'order_statuses'        => $statuses,
-				'inform_customer_eta'   => (bool) $inform,
-				'frontend_extra_pool'   => (bool) $front,
-				'brand_logo_url'        => $logo,
-				'brand_primary_color'   => $color,
-				'brand_support_email'   => $email,
-				'brand_support_phone'   => $phone,
-				'email_footer_text_no'  => $footer,
+                                'order_statuses'        => $statuses,
+                                'inform_customer_eta'   => (bool) $inform,
+                                'frontend_extra_pool'   => (bool) $front,
+                                'frontend_refresh_interval' => (int) $interval,
+                                'brand_logo_url'        => $logo,
+                                'brand_primary_color'   => $color,
+                                'brand_support_email'   => $email,
+                                'brand_support_phone'   => $phone,
+                                'email_footer_text_no'  => $footer,
 			);
 		}
 	}
@@ -228,13 +241,28 @@ if ( ! class_exists( __NAMESPACE__ . '\Admin_Settings_Tab' ) ) {
 					'default' => 'no',
 				),
 
-				array(
-					'title'   => __( 'Show available PO stock on frontend', 'lpr-backorder-allocator' ),
-					'desc'    => __( 'Writes precomputed product meta only; no frontend logic runs.', 'lpr-backorder-allocator' ),
-					'id'      => 'lpr_allocator_frontend_extra_pool',
-					'type'    => 'checkbox',
-					'default' => 'no',
-				),
+                                array(
+                                        'title'   => __( 'Show available PO stock on frontend', 'lpr-backorder-allocator' ),
+                                        'desc'    => __( 'Writes precomputed product meta only; no frontend logic runs.', 'lpr-backorder-allocator' ),
+                                        'id'      => 'lpr_allocator_frontend_extra_pool',
+                                        'type'    => 'checkbox',
+                                        'default' => 'no',
+                                ),
+
+                                array(
+                                        'title'   => __( 'Frontend notice refresh', 'lpr-backorder-allocator' ),
+                                        'desc'    => __( 'How often to refresh incoming PO availability for storefront notices.', 'lpr-backorder-allocator' ),
+                                        'id'      => 'lpr_allocator_frontend_refresh_interval',
+                                        'type'    => 'select',
+                                        'options' => array(
+                                                300  => __( 'Every 5 minutes', 'lpr-backorder-allocator' ),
+                                                900  => __( 'Every 15 minutes', 'lpr-backorder-allocator' ),
+                                                1800 => __( 'Every 30 minutes', 'lpr-backorder-allocator' ),
+                                                3600 => __( 'Every hour', 'lpr-backorder-allocator' ),
+                                                7200 => __( 'Every 2 hours', 'lpr-backorder-allocator' ),
+                                        ),
+                                        'default' => 900,
+                                ),
 
 				array(
 					'type'  => 'sectionend',
@@ -304,15 +332,16 @@ if ( ! class_exists( __NAMESPACE__ . '\Admin_Settings_Tab' ) ) {
 		 * Provide field values to WC renderer from our single option via pre_option_*.
 		 */
 		protected static function prime_field_values( array $settings ): void {
-			$map = array(
-				'lpr_allocator_order_statuses'       => (array) $settings['order_statuses'],
-				'lpr_allocator_inform_customer_eta'  => $settings['inform_customer_eta'] ? 'yes' : 'no',
-				'lpr_allocator_frontend_extra_pool'  => $settings['frontend_extra_pool'] ? 'yes' : 'no',
-				'lpr_allocator_brand_logo_url'       => (string) $settings['brand_logo_url'],
-				'lpr_allocator_brand_primary_color'  => (string) $settings['brand_primary_color'],
-				'lpr_allocator_brand_support_email'  => (string) $settings['brand_support_email'],
-				'lpr_allocator_brand_support_phone'  => (string) $settings['brand_support_phone'],
-				'lpr_allocator_email_footer_text_no' => (string) $settings['email_footer_text_no'],
+                                $map = array(
+                                        'lpr_allocator_order_statuses'       => (array) $settings['order_statuses'],
+                                        'lpr_allocator_inform_customer_eta'  => $settings['inform_customer_eta'] ? 'yes' : 'no',
+                                        'lpr_allocator_frontend_extra_pool'  => $settings['frontend_extra_pool'] ? 'yes' : 'no',
+                                        'lpr_allocator_frontend_refresh_interval' => (int) $settings['frontend_refresh_interval'],
+                                        'lpr_allocator_brand_logo_url'       => (string) $settings['brand_logo_url'],
+                                        'lpr_allocator_brand_primary_color'  => (string) $settings['brand_primary_color'],
+                                        'lpr_allocator_brand_support_email'  => (string) $settings['brand_support_email'],
+                                        'lpr_allocator_brand_support_phone'  => (string) $settings['brand_support_phone'],
+                                        'lpr_allocator_email_footer_text_no' => (string) $settings['email_footer_text_no'],
 			);
 
 			foreach ( $map as $opt => $val ) {
@@ -354,24 +383,29 @@ if ( ! class_exists( __NAMESPACE__ . '\Admin_Settings_Tab' ) ) {
 				check_admin_referer( 'woocommerce-settings' );
 			}
 
-			$posted_statuses = isset( $_POST['lpr_allocator_order_statuses'] ) ? (array) wp_unslash( $_POST['lpr_allocator_order_statuses'] ) : array();
-			$raw = array(
-				'order_statuses'        => $posted_statuses,
-				'inform_customer_eta'   => ! empty( $_POST['lpr_allocator_inform_customer_eta'] ),
-				'frontend_extra_pool'   => ! empty( $_POST['lpr_allocator_frontend_extra_pool'] ),
-				'brand_logo_url'        => isset( $_POST['lpr_allocator_brand_logo_url'] ) ? (string) wp_unslash( $_POST['lpr_allocator_brand_logo_url'] ) : '',
-				'brand_primary_color'   => isset( $_POST['lpr_allocator_brand_primary_color'] ) ? (string) wp_unslash( $_POST['lpr_allocator_brand_primary_color'] ) : '',
-				'brand_support_email'   => isset( $_POST['lpr_allocator_brand_support_email'] ) ? (string) wp_unslash( $_POST['lpr_allocator_brand_support_email'] ) : '',
-				'brand_support_phone'   => isset( $_POST['lpr_allocator_brand_support_phone'] ) ? (string) wp_unslash( $_POST['lpr_allocator_brand_support_phone'] ) : '',
-				'email_footer_text_no'  => isset( $_POST['lpr_allocator_email_footer_text_no'] ) ? (string) wp_unslash( $_POST['lpr_allocator_email_footer_text_no'] ) : '',
-			);
+                                $posted_statuses = isset( $_POST['lpr_allocator_order_statuses'] ) ? (array) wp_unslash( $_POST['lpr_allocator_order_statuses'] ) : array();
+                                $raw = array(
+                                        'order_statuses'        => $posted_statuses,
+                                        'inform_customer_eta'   => ! empty( $_POST['lpr_allocator_inform_customer_eta'] ),
+                                        'frontend_extra_pool'   => ! empty( $_POST['lpr_allocator_frontend_extra_pool'] ),
+                                        'frontend_refresh_interval' => isset( $_POST['lpr_allocator_frontend_refresh_interval'] ) ? (int) $_POST['lpr_allocator_frontend_refresh_interval'] : 900,
+                                        'brand_logo_url'        => isset( $_POST['lpr_allocator_brand_logo_url'] ) ? (string) wp_unslash( $_POST['lpr_allocator_brand_logo_url'] ) : '',
+                                        'brand_primary_color'   => isset( $_POST['lpr_allocator_brand_primary_color'] ) ? (string) wp_unslash( $_POST['lpr_allocator_brand_primary_color'] ) : '',
+                                        'brand_support_email'   => isset( $_POST['lpr_allocator_brand_support_email'] ) ? (string) wp_unslash( $_POST['lpr_allocator_brand_support_email'] ) : '',
+                                        'brand_support_phone'   => isset( $_POST['lpr_allocator_brand_support_phone'] ) ? (string) wp_unslash( $_POST['lpr_allocator_brand_support_phone'] ) : '',
+                                        'email_footer_text_no'  => isset( $_POST['lpr_allocator_email_footer_text_no'] ) ? (string) wp_unslash( $_POST['lpr_allocator_email_footer_text_no'] ) : '',
+                                );
 
-			Settings::update( $raw );
+                        Settings::update( $raw );
 
-			if ( class_exists( '\WC_Admin_Settings' ) ) {
-				\WC_Admin_Settings::add_message( __( 'Backorder Allocator settings saved.', 'lpr-backorder-allocator' ) );
-			}
-		}
+                        if ( class_exists( __NAMESPACE__ . '\Incoming_Stock_Indexer' ) ) {
+                                Incoming_Stock_Indexer::reset_schedule();
+                        }
+
+                        if ( class_exists( '\WC_Admin_Settings' ) ) {
+                                \WC_Admin_Settings::add_message( __( 'Backorder Allocator settings saved.', 'lpr-backorder-allocator' ) );
+                        }
+                }
 	}
 	Admin_Settings_Tab::init();
 }
@@ -2548,10 +2582,10 @@ if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_get_item_allocated_activ
  * Helper: get or create a "Quick PO Draft" for the current user and optionally seed header meta.
  */
 if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_get_or_create_quick_po_for_user' ) ) {
-	function lpr_allocator_get_or_create_quick_po_for_user( string $supplier = '', string $eta_ymd = '', string $po_number = '' ): int {
-		$user_id = get_current_user_id();
-		if ( $user_id <= 0 ) {
-			return 0;
+        function lpr_allocator_get_or_create_quick_po_for_user( string $supplier = '', string $eta_ymd = '', string $po_number = '' ): int {
+                $user_id = get_current_user_id();
+                if ( $user_id <= 0 ) {
+                        return 0;
 		}
 		$meta_key = 'lpr_quick_po_draft_id';
 		$po_id    = (int) get_user_meta( $user_id, $meta_key, true );
@@ -2603,15 +2637,228 @@ if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_get_or_create_quick_po_f
 			}
 		}
 
-		return (int) $po_id;
-	}
+                return (int) $po_id;
+        }
+}
+
+/**
+ * Builds and stores incoming PO availability for products (frontend notices + admin UI).
+ */
+if ( ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Indexer' ) ) {
+        class Incoming_Stock_Indexer {
+
+                const ACTION_HOOK      = 'lpr_allocator_refresh_incoming_stock';
+                const OPTION_LAST_IDS  = 'lpr_allocator_incoming_ids';
+
+                public static function init(): void {
+                        add_action( 'init', array( __CLASS__, 'maybe_schedule' ) );
+                        add_action( self::ACTION_HOOK, array( __CLASS__, 'run' ) );
+                }
+
+                /**
+                 * Used after settings changes to rebuild the recurring schedule.
+                 */
+                public static function reset_schedule(): void {
+                        if ( function_exists( 'as_unschedule_all_actions' ) ) {
+                                as_unschedule_all_actions( self::ACTION_HOOK, array(), 'lpr-allocator' );
+                        } else {
+                                wp_clear_scheduled_hook( self::ACTION_HOOK );
+                        }
+                        self::maybe_schedule( true );
+                }
+
+                /**
+                 * Determine interval (seconds) from settings.
+                 */
+                protected static function get_interval(): int {
+                        $settings = class_exists( __NAMESPACE__ . '\Settings' ) ? Settings::get() : array();
+                        $interval = isset( $settings['frontend_refresh_interval'] ) ? (int) $settings['frontend_refresh_interval'] : 900;
+                        $interval = max( 300, $interval );
+                        return $interval;
+                }
+
+                /**
+                 * Ensure a recurring task exists.
+                 */
+                public static function maybe_schedule( bool $force = false ): void {
+                        $interval = self::get_interval();
+
+                        if ( function_exists( 'as_schedule_recurring_action' ) && function_exists( 'as_next_scheduled_action' ) ) {
+                                if ( $force && function_exists( 'as_unschedule_all_actions' ) ) {
+                                        as_unschedule_all_actions( self::ACTION_HOOK, array(), 'lpr-allocator' );
+                                }
+                                $next = as_next_scheduled_action( self::ACTION_HOOK, array(), 'lpr-allocator' );
+                                if ( ! $next ) {
+                                        as_schedule_recurring_action( time() + 60, $interval, self::ACTION_HOOK, array(), 'lpr-allocator', true );
+                                }
+                        } else {
+                                if ( $force ) {
+                                        wp_clear_scheduled_hook( self::ACTION_HOOK );
+                                }
+                                if ( ! wp_next_scheduled( self::ACTION_HOOK ) ) {
+                                        wp_schedule_single_event( time() + $interval, self::ACTION_HOOK );
+                                }
+                        }
+                }
+
+                /**
+                 * Action Scheduler / WP-Cron entrypoint.
+                 */
+                public static function run(): void {
+                        self::refresh_all();
+
+                        // Fallback when AS is unavailable: keep chaining single events.
+                        if ( ! function_exists( 'as_schedule_recurring_action' ) && ! wp_next_scheduled( self::ACTION_HOOK ) ) {
+                                wp_schedule_single_event( time() + self::get_interval(), self::ACTION_HOOK );
+                        }
+                }
+
+                /**
+                 * Rebuild incoming availability snapshot and persist to product meta.
+                 */
+                protected static function refresh_all(): void {
+                        $products = array(); // product_id => [ [eta, qty_free, qty_ordered, po_id, po_number], ... ]
+
+                        $query = new \WP_Query(
+                                array(
+                                        'post_type'      => defined( __NAMESPACE__ . '\CPT_SUPPLIER_PO' ) ? CPT_SUPPLIER_PO : 'supplier_po',
+                                        'post_status'    => array( defined( __NAMESPACE__ . '\PO_STATUS_OPEN' ) ? PO_STATUS_OPEN : 'open' ),
+                                        'posts_per_page' => -1,
+                                        'fields'         => 'ids',
+                                        'no_found_rows'  => true,
+                                )
+                        );
+
+                        foreach ( $query->posts as $po_id ) {
+                                $po_eta    = lpr_allocator_sanitize_ymd( (string) get_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_ETA_DATE' ) ? PO_META_ETA_DATE : '_lpr_eta_date', true ) );
+                                $po_number = (string) get_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_PO_NUMBER' ) ? PO_META_PO_NUMBER : '_lpr_po_number', true );
+                                $lines     = get_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_LINES' ) ? PO_META_LINES : '_lpr_po_lines', true );
+                                if ( ! is_array( $lines ) || empty( $lines ) ) {
+                                        continue;
+                                }
+
+                                foreach ( $lines as $line ) {
+                                        $qty_ordered   = isset( $line['qty_ordered'] ) ? max( 0, (int) $line['qty_ordered'] ) : 0;
+                                        $qty_allocated = isset( $line['qty_allocated'] ) ? max( 0, (int) $line['qty_allocated'] ) : 0;
+                                        $qty_received  = isset( $line['qty_received'] ) ? max( 0, (int) $line['qty_received'] ) : 0;
+                                        $free          = max( 0, $qty_ordered - $qty_allocated - $qty_received );
+
+                                        if ( $free <= 0 ) {
+                                                continue;
+                                        }
+
+                                        $target_id = isset( $line['variation_id'] ) && (int) $line['variation_id'] > 0 ? (int) $line['variation_id'] : (int) ( $line['product_id'] ?? 0 );
+                                        if ( $target_id <= 0 || ! lpr_allocator_product_exists( $target_id ) ) {
+                                                continue;
+                                        }
+
+                                        $eta = lpr_allocator_sanitize_ymd( isset( $line['eta_override'] ) ? (string) $line['eta_override'] : '' );
+                                        if ( '' === $eta ) {
+                                                $eta = $po_eta;
+                                        }
+
+                                        $products[ $target_id ][] = array(
+                                                'eta'         => $eta,
+                                                'qty_free'    => $free,
+                                                'qty_ordered' => $qty_ordered,
+                                                'po_id'       => (int) $po_id,
+                                                'po_number'   => $po_number,
+                                        );
+                                }
+                        }
+
+                        $new_ids = array();
+                        foreach ( $products as $product_id => $entries ) {
+                                usort(
+                                        $entries,
+                                        static function ( $a, $b ) {
+                                                $ea = $a['eta'] ?? '';
+                                                $eb = $b['eta'] ?? '';
+                                                if ( $ea === $eb ) {
+                                                        return ( $a['po_id'] ?? 0 ) <=> ( $b['po_id'] ?? 0 );
+                                                }
+                                                if ( '' === $ea ) {
+                                                        return 1;
+                                                }
+                                                if ( '' === $eb ) {
+                                                        return -1;
+                                                }
+                                                return strcmp( $ea, $eb );
+                                        }
+                                );
+
+                                $first = $entries[0];
+                                update_post_meta( $product_id, defined( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_QTY' ) ? PRODUCT_META_NEXT_EXTRA_QTY : '_lpr_next_extra_qty', (int) ( $first['qty_free'] ?? 0 ) );
+                                update_post_meta( $product_id, defined( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_ETA' ) ? PRODUCT_META_NEXT_EXTRA_ETA : '_lpr_next_extra_eta', (string) ( $first['eta'] ?? '' ) );
+                                update_post_meta( $product_id, defined( __NAMESPACE__ . '\PRODUCT_META_INCOMING_DETAILS' ) ? PRODUCT_META_INCOMING_DETAILS : '_lpr_incoming_po_details', $entries );
+
+                                $new_ids[] = (int) $product_id;
+                        }
+
+                        $prev_ids = get_option( self::OPTION_LAST_IDS, array() );
+                        if ( ! is_array( $prev_ids ) ) {
+                                $prev_ids = array();
+                        }
+
+                        foreach ( $prev_ids as $old_id ) {
+                                if ( ! in_array( (int) $old_id, $new_ids, true ) ) {
+                                        delete_post_meta( (int) $old_id, defined( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_QTY' ) ? PRODUCT_META_NEXT_EXTRA_QTY : '_lpr_next_extra_qty' );
+                                        delete_post_meta( (int) $old_id, defined( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_ETA' ) ? PRODUCT_META_NEXT_EXTRA_ETA : '_lpr_next_extra_eta' );
+                                        delete_post_meta( (int) $old_id, defined( __NAMESPACE__ . '\PRODUCT_META_INCOMING_DETAILS' ) ? PRODUCT_META_INCOMING_DETAILS : '_lpr_incoming_po_details' );
+                                }
+                        }
+
+                        if ( null === get_option( self::OPTION_LAST_IDS, null ) ) {
+                                add_option( self::OPTION_LAST_IDS, $new_ids, '', 'no' );
+                        } else {
+                                update_option( self::OPTION_LAST_IDS, $new_ids, false );
+                        }
+                }
+
+                /**
+                 * Read-only helpers for UI consumers.
+                 */
+                public static function get_product_snapshot( int $product_id ): array {
+                        return array(
+                                'qty'      => (int) get_post_meta( $product_id, defined( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_QTY' ) ? PRODUCT_META_NEXT_EXTRA_QTY : '_lpr_next_extra_qty', true ),
+                                'eta'      => (string) get_post_meta( $product_id, defined( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_ETA' ) ? PRODUCT_META_NEXT_EXTRA_ETA : '_lpr_next_extra_eta', true ),
+                                'details'  => self::get_product_details( $product_id ),
+                        );
+                }
+
+                public static function get_product_details( int $product_id ): array {
+                        $details = get_post_meta( $product_id, defined( __NAMESPACE__ . '\PRODUCT_META_INCOMING_DETAILS' ) ? PRODUCT_META_INCOMING_DETAILS : '_lpr_incoming_po_details', true );
+                        if ( ! is_array( $details ) ) {
+                                return array();
+                        }
+                        usort(
+                                $details,
+                                static function ( $a, $b ) {
+                                        $ea = $a['eta'] ?? '';
+                                        $eb = $b['eta'] ?? '';
+                                        if ( $ea === $eb ) {
+                                                return ( $a['po_id'] ?? 0 ) <=> ( $b['po_id'] ?? 0 );
+                                        }
+                                        if ( '' === $ea ) {
+                                                return 1;
+                                        }
+                                        if ( '' === $eb ) {
+                                                return -1;
+                                        }
+                                        return strcmp( $ea, $eb );
+                                }
+                        );
+                        return $details;
+                }
+        }
+        Incoming_Stock_Indexer::init();
 }
 
 /**
  * Builds a cached "backordered products" index from orders (async-capable via Action Scheduler).
  */
 if ( ! class_exists( __NAMESPACE__ . '\Backorder_Indexer' ) ) {
-	class Backorder_Indexer {
+        class Backorder_Indexer {
 
 		const OPT_KEY = 'lpr_allocator_backorder_index';
 		const MAX_AGE = 600; // seconds
@@ -2786,15 +3033,89 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Indexer' ) ) {
 				'rows'     => $rows,
 			);
 		}
-	}
-	Backorder_Indexer::init();
+        }
+        Backorder_Indexer::init();
+}
+
+/**
+ * Admin product UI: show incoming PO availability beneath Quantity.
+ */
+if ( ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Product_UI' ) ) {
+        class Incoming_Stock_Product_UI {
+
+                public static function init(): void {
+                        add_action( 'woocommerce_product_options_stock_fields', array( __CLASS__, 'render_simple_product' ) );
+                        add_action( 'woocommerce_variation_options_inventory', array( __CLASS__, 'render_variation_product' ), 20, 3 );
+                }
+
+                public static function render_simple_product(): void {
+                        global $product_object;
+                        $product_id = 0;
+                        if ( $product_object instanceof \WC_Product ) {
+                                $product_id = (int) $product_object->get_id();
+                        } elseif ( isset( $GLOBALS['post'] ) && $GLOBALS['post'] instanceof \WP_Post ) {
+                                $product_id = (int) $GLOBALS['post']->ID;
+                        }
+                        self::render_block( $product_id, false );
+                }
+
+                public static function render_variation_product( $loop, array $variation_data, $variation ): void { // phpcs:ignore Universal.NamingConventions.NoReservedKeywordParameterNames
+                        $product_id = 0;
+                        if ( $variation instanceof \WC_Product ) {
+                                $product_id = (int) $variation->get_id();
+                        }
+                        self::render_block( $product_id, true );
+                }
+
+                protected static function render_block( int $product_id, bool $is_variation ): void {
+                        if ( $product_id <= 0 ) {
+                                return;
+                        }
+
+                        $snapshot = class_exists( __NAMESPACE__ . '\Incoming_Stock_Indexer' ) ? Incoming_Stock_Indexer::get_product_snapshot( $product_id ) : array( 'qty' => 0, 'eta' => '', 'details' => array() );
+                        $label    = __( 'Incoming PO availability', 'lpr-backorder-allocator' );
+
+                        $field_classes = $is_variation ? 'form-row form-row-full lpr-incoming-po' : 'form-field lpr-incoming-po';
+
+                        echo '<p class="' . esc_attr( $field_classes ) . '">';
+                        echo '<label>' . esc_html( $label ) . '</label>';
+
+                        if ( ! empty( $snapshot['details'] ) ) {
+                                $eta_text = $snapshot['eta'] ? $snapshot['eta'] : __( 'No ETA set', 'lpr-backorder-allocator' );
+                                echo '<span>' . esc_html( sprintf( __( '%1$d free units arriving (next ETA %2$s).', 'lpr-backorder-allocator' ), (int) $snapshot['qty'], $eta_text ) ) . '</span>';
+
+                                echo '<ul style="margin-top:6px;">';
+                                foreach ( (array) $snapshot['details'] as $entry ) {
+                                        $po_label = ! empty( $entry['po_number'] ) ? (string) $entry['po_number'] : ( '#' . ( $entry['po_id'] ?? '' ) );
+                                        $line_eta = ! empty( $entry['eta'] ) ? (string) $entry['eta'] : __( 'No ETA', 'lpr-backorder-allocator' );
+                                        $ordered  = isset( $entry['qty_ordered'] ) ? (int) $entry['qty_ordered'] : 0;
+                                        $free     = isset( $entry['qty_free'] ) ? (int) $entry['qty_free'] : 0;
+                                        $text     = sprintf(
+                                                /* translators: 1: PO number, 2: ETA, 3: ordered qty, 4: free qty */
+                                                __( 'PO %1$s – ETA %2$s – Ordered %3$d, Free %4$d', 'lpr-backorder-allocator' ),
+                                                $po_label,
+                                                $line_eta,
+                                                $ordered,
+                                                $free
+                                        );
+                                        echo '<li style="margin-left:1em;list-style:disc;">' . esc_html( $text ) . '</li>';
+                                }
+                                echo '</ul>';
+                        } else {
+                                echo '<span>' . esc_html__( 'No open purchase orders with free quantity.', 'lpr-backorder-allocator' ) . '</span>';
+                        }
+
+                        echo '</p>';
+                }
+        }
+        Incoming_Stock_Product_UI::init();
 }
 
 /**
  * Admin page: "Backordered Products" with quick add-to-PO actions.
  */
 if ( ! class_exists( __NAMESPACE__ . '\Backordered_Products_Page' ) ) {
-	class Backordered_Products_Page {
+        class Backordered_Products_Page {
 
 		public static function init(): void {
 			add_action( 'admin_menu', array( __CLASS__, 'register_page' ) );
