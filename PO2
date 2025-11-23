@@ -1677,9 +1677,18 @@ if ( ! class_exists( __NAMESPACE__ . '\Order_Allocations_Metabox' ) ) {
 			 return;
 			}
 
-			$items = $order->get_items( 'line_item' );
+                        $items = $order->get_items( 'line_item' );
 
-			// Basic styles.
+                        // VIP prioritization trigger.
+                        $vip_nonce = wp_create_nonce( 'lpr_vip_' . (int) $order_id );
+                        if ( class_exists( __NAMESPACE__ . '\Order_VIP_Prioritizer' ) && Order_VIP_Prioritizer::should_show_button( $order ) ) {
+                                echo '<div style="margin:8px 0 14px;">';
+                                echo '<button type="button" class="button button-primary lpr-vip-trigger" data-order="' . esc_attr( (string) $order_id ) . '" data-nonce="' . esc_attr( $vip_nonce ) . '">' . esc_html__( 'VIP prioritize', 'lpr-backorder-allocator' ) . '</button>';
+                                echo '<span style="margin-left:10px;opacity:.8;">' . esc_html__( 'Give this order the earliest possible delivery date.', 'lpr-backorder-allocator' ) . '</span>';
+                                echo '</div>';
+                        }
+
+                        // Basic styles.
 			$css  = '.lpr-alloc-eta{width:100%;border-collapse:collapse}.lpr-alloc-eta th,.lpr-alloc-eta td{padding:6px;border-bottom:1px solid #ddd;text-align:left}';
 			$css .= '.lpr-alloc-sub{margin:6px 0 0 0;border-collapse:collapse;width:100%}.lpr-alloc-sub th,.lpr-alloc-sub td{padding:4px;border-bottom:1px solid #eee;font-size:12px}';
 			$css .= '.lpr-badge{display:inline-block;padding:2px 6px;border-radius:3px;background:#f0ad4e;color:#111;font-size:11px;margin-left:6px}';
@@ -1770,10 +1779,943 @@ if ( ! class_exists( __NAMESPACE__ . '\Order_Allocations_Metabox' ) ) {
 				echo '</tr>';
 			}
 
-			echo '</tbody></table>';
-		}
-	}
+                        echo '</tbody></table>';
+
+                        // Lightweight modal container and behaviors (one-time output).
+                        static $vip_script_done = false;
+                        if ( ! $vip_script_done ) {
+                                $vip_script_done = true;
+                                ?>
+                                <style>
+                                        .lpr-vip-overlay{position:fixed;z-index:100000;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:20px;}
+                                        .lpr-vip-modal{background:#fff;max-width:820px;width:100%;border-radius:6px;box-shadow:0 10px 40px rgba(0,0,0,.25);overflow:hidden;}
+                                        .lpr-vip-modal header{padding:14px 16px;border-bottom:1px solid #eee;display:flex;justify-content:space-between;align-items:center;}
+                                        .lpr-vip-modal header h3{margin:0;font-size:16px;}
+                                        .lpr-vip-modal .lpr-vip-body{max-height:60vh;overflow:auto;padding:16px;}
+                                        .lpr-vip-modal table{width:100%;border-collapse:collapse;}
+                                        .lpr-vip-modal th,.lpr-vip-modal td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:top;}
+                                        .lpr-vip-modal .lpr-actions{padding:12px 16px;border-top:1px solid #eee;text-align:right;}
+                                </style>
+                                <script>
+                                (function($){
+                                        function showVipModal(html){
+                                                $('.lpr-vip-overlay').remove();
+                                                var $wrap = $('<div class="lpr-vip-overlay"></div>');
+                                                $wrap.append(html);
+                                                $('body').append($wrap);
+                                        }
+                                        $(document).on('click','.lpr-vip-trigger',function(e){
+                                                e.preventDefault();
+                                                var $btn = $(this);
+                                                var orderId = $btn.data('order');
+                                                var nonce = $btn.data('nonce');
+                                                $btn.prop('disabled', true).addClass('lpr-loading');
+                                                $.post(ajaxurl,{action:'lpr_vip_preview',order_id:orderId,_wpnonce:nonce},function(resp){
+                                                        $btn.prop('disabled', false).removeClass('lpr-loading');
+                                                        if(resp && resp.success && resp.data && resp.data.html){
+                                                                showVipModal(resp.data.html);
+                                                        }else if(resp && resp.data && resp.data.message){
+                                                                window.alert(resp.data.message);
+                                                        }else{
+                                                                window.alert('<?php echo esc_js( __( 'Unable to load VIP preview.', 'lpr-backorder-allocator' ) ); ?>');
+                                                        }
+                                                }).fail(function(){
+                                                        $btn.prop('disabled', false).removeClass('lpr-loading');
+                                                        window.alert('<?php echo esc_js( __( 'Unable to load VIP preview.', 'lpr-backorder-allocator' ) ); ?>');
+                                                });
+                                        });
+
+                                        $(document).on('click','.lpr-vip-cancel',function(e){
+                                                e.preventDefault();
+                                                $(this).closest('.lpr-vip-overlay').remove();
+                                        });
+
+                                        $(document).on('click','.lpr-vip-confirm',function(e){
+                                                e.preventDefault();
+                                                var $btn = $(this);
+                                                var plan = $btn.data('plan');
+                                                var nonce = $btn.data('nonce');
+                                                $btn.prop('disabled', true);
+                                                $.post(ajaxurl,{action:'lpr_vip_confirm',plan_key:plan,_wpnonce:nonce},function(resp){
+                                                        if(resp && resp.success){
+                                                                window.location.reload();
+                                                                return;
+                                                        }
+                                                        $btn.prop('disabled', false);
+                                                        if(resp && resp.data && resp.data.message){
+                                                                window.alert(resp.data.message);
+                                                        }else{
+                                                                window.alert('<?php echo esc_js( __( 'Unable to apply VIP changes.', 'lpr-backorder-allocator' ) ); ?>');
+                                                        }
+                                                }).fail(function(){
+                                                        $btn.prop('disabled', false);
+                                                        window.alert('<?php echo esc_js( __( 'Unable to apply VIP changes.', 'lpr-backorder-allocator' ) ); ?>');
+                                                });
+                                        });
+                                })(jQuery);
+                                </script>
+                                <?php
+                        }
+                }
+        }
         Order_Allocations_Metabox::init();
+}
+
+if ( ! class_exists( __NAMESPACE__ . '\Order_VIP_Prioritizer' ) ) {
+        /**
+         * VIP prioritization workflow (preview + confirm) for giving an order the earliest possible ETA.
+         */
+        class Order_VIP_Prioritizer {
+
+                public static function init(): void {
+                        add_action( 'wp_ajax_lpr_vip_preview', array( __CLASS__, 'ajax_preview' ) );
+                        add_action( 'wp_ajax_lpr_vip_confirm', array( __CLASS__, 'ajax_confirm' ) );
+                }
+
+                /**
+                 * Whether the VIP button should be visible for the order.
+                 */
+                public static function should_show_button( \WC_Order $order ): bool {
+                        if ( ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Indexer' ) ) {
+                                return false;
+                        }
+
+                        foreach ( $order->get_items( 'line_item' ) as $item ) {
+                                if ( ! ( $item instanceof \WC_Order_Item_Product ) ) {
+                                        continue;
+                                }
+
+                                $target_id = (int) $item->get_variation_id();
+                                if ( $target_id <= 0 ) {
+                                        $target_id = (int) $item->get_product_id();
+                                }
+                                if ( $target_id <= 0 ) {
+                                        continue;
+                                }
+
+                                $incoming = Incoming_Stock_Indexer::get_product_details( $target_id );
+                                if ( empty( $incoming ) ) {
+                                        continue;
+                                }
+
+                                $order_qty      = max( 0, (int) $item->get_quantity() );
+                                $allocated      = function_exists( __NAMESPACE__ . '\lpr_allocator_get_item_allocated_active' ) ? lpr_allocator_get_item_allocated_active( $item ) : 0;
+                                $missing        = max( 0, $order_qty - $allocated );
+                                $earliest_in    = lpr_allocator_sanitize_ymd( (string) ( $incoming[0]['eta'] ?? '' ) );
+                                $current_earlie = self::item_earliest_eta( $item );
+
+                                if ( $missing > 0 ) {
+                                        return true;
+                                }
+
+                                if ( $earliest_in && ( '' === $current_earlie || strcmp( $current_earlie, $earliest_in ) > 0 ) ) {
+                                        return true;
+                                }
+                        }
+
+                        return false;
+                }
+
+                /**
+                 * AJAX: preview VIP reallocations.
+                 */
+                public static function ajax_preview(): void {
+                        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+                                wp_send_json_error( array( 'message' => __( 'Insufficient permissions.', 'lpr-backorder-allocator' ) ) );
+                        }
+
+                        $order_id = isset( $_POST['order_id'] ) ? absint( $_POST['order_id'] ) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+                        $nonce    = isset( $_POST['_wpnonce'] ) ? (string) $_POST['_wpnonce'] : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+
+                        if ( $order_id <= 0 || ! wp_verify_nonce( $nonce, 'lpr_vip_' . $order_id ) ) {
+                                wp_send_json_error( array( 'message' => __( 'Invalid request.', 'lpr-backorder-allocator' ) ) );
+                        }
+
+                        $plan = self::build_plan( $order_id );
+                        if ( empty( $plan['items'] ) ) {
+                                wp_send_json_error( array( 'message' => __( 'No eligible VIP moves found.', 'lpr-backorder-allocator' ) ) );
+                        }
+
+                        $key     = 'lpr_vip_plan_' . wp_generate_uuid4();
+                        $payload = array(
+                                'order_id' => (int) $order_id,
+                                'plan'     => $plan,
+                                'created'  => time(),
+                        );
+                        set_transient( $key, $payload, 10 * MINUTE_IN_SECONDS );
+
+                        $html = self::render_preview_modal( $plan, $key, $nonce );
+
+                        wp_send_json_success( array(
+                                'html' => $html,
+                        ) );
+                }
+
+                /**
+                 * AJAX: apply confirmed plan.
+                 */
+                public static function ajax_confirm(): void {
+                        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+                                wp_send_json_error( array( 'message' => __( 'Insufficient permissions.', 'lpr-backorder-allocator' ) ) );
+                        }
+
+                        $key   = isset( $_POST['plan_key'] ) ? sanitize_text_field( wp_unslash( $_POST['plan_key'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+                        $nonce = isset( $_POST['_wpnonce'] ) ? (string) $_POST['_wpnonce'] : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+
+                        $payload = $key ? get_transient( $key ) : false;
+                        if ( ! $payload || ! is_array( $payload ) ) {
+                                wp_send_json_error( array( 'message' => __( 'This VIP preview expired. Please retry.', 'lpr-backorder-allocator' ) ) );
+                        }
+
+                        $order_id = isset( $payload['order_id'] ) ? (int) $payload['order_id'] : 0;
+                        if ( $order_id <= 0 || ! wp_verify_nonce( $nonce, 'lpr_vip_' . $order_id ) ) {
+                                delete_transient( $key );
+                                wp_send_json_error( array( 'message' => __( 'Invalid request.', 'lpr-backorder-allocator' ) ) );
+                        }
+
+                        $plan = isset( $payload['plan'] ) ? $payload['plan'] : array();
+                        if ( empty( $plan['items'] ) ) {
+                                delete_transient( $key );
+                                wp_send_json_error( array( 'message' => __( 'Nothing to apply.', 'lpr-backorder-allocator' ) ) );
+                        }
+
+                        $ok = self::apply_plan( $plan );
+                        delete_transient( $key );
+
+                        if ( ! $ok ) {
+                                wp_send_json_error( array( 'message' => __( 'Unable to apply VIP changes. Please retry.', 'lpr-backorder-allocator' ) ) );
+                        }
+
+                        wp_send_json_success();
+                }
+
+                /**
+                 * Build the VIP plan for an order.
+                 */
+                protected static function build_plan( int $order_id ): array {
+                        $order = wc_get_order( $order_id );
+                        if ( ! ( $order instanceof \WC_Order ) ) {
+                                return array();
+                        }
+
+                        $items_plan = array();
+
+                        foreach ( $order->get_items( 'line_item' ) as $item ) {
+                                if ( ! ( $item instanceof \WC_Order_Item_Product ) ) {
+                                        continue;
+                                }
+
+                                $target_id = (int) $item->get_variation_id();
+                                if ( $target_id <= 0 ) {
+                                        $target_id = (int) $item->get_product_id();
+                                }
+                                if ( $target_id <= 0 ) {
+                                        continue;
+                                }
+
+                                $entries = class_exists( __NAMESPACE__ . '\Incoming_Stock_Indexer' ) ? Incoming_Stock_Indexer::get_product_details( $target_id ) : array();
+                                if ( empty( $entries ) ) {
+                                        continue;
+                                }
+
+                                $normalized = self::normalize_entries( $entries, $target_id, (int) $order->get_id() );
+                                if ( empty( $normalized ) ) {
+                                        continue;
+                                }
+
+                                $order_qty = max( 0, (int) $item->get_quantity() );
+                                $current   = function_exists( __NAMESPACE__ . '\lpr_allocator_get_item_allocated_active' ) ? lpr_allocator_get_item_allocated_active( $item ) : 0;
+                                $missing   = max( 0, $order_qty - $current );
+
+                                // Aim to fill earliest PO first.
+                                $first      = $normalized[0];
+                                $vip_po_map = self::current_po_map( $item );
+                                $vip_on_first = isset( $vip_po_map[ $first['po_id'] ] ) ? max( 0, (int) $vip_po_map[ $first['po_id'] ] ) : 0;
+                                $first_supply = $first['free'];
+                                foreach ( $first['borrowable'] as $row ) {
+                                        $first_supply += $row['qty'];
+                                }
+                                $desired_first = max( 0, min( $order_qty, $vip_on_first + $first_supply ) - $vip_on_first );
+                                $needed        = max( $missing, $desired_first );
+
+                                $displaced      = array();
+                                $vip_allocs     = array();
+                                $new_qty        = 0;
+                                $needed_running = $needed;
+
+                                foreach ( $normalized as $idx => &$entry ) {
+                                        if ( $needed_running <= 0 ) {
+                                                break;
+                                        }
+
+                                        $pulled = self::pull_from_entry( $entry, $needed_running, $order_id, $displaced );
+                                        if ( $pulled > 0 ) {
+                                                $vip_allocs[] = array(
+                                                        'po_id'     => $entry['po_id'],
+                                                        'po_number' => $entry['po_number'],
+                                                        'eta'       => $entry['eta'],
+                                                        'qty'       => $pulled,
+                                                );
+                                                $new_qty        += $pulled;
+                                                $needed_running -= $pulled;
+                                        }
+                                }
+                                unset( $entry );
+
+                                if ( $new_qty <= 0 && empty( $displaced ) ) {
+                                        continue;
+                                }
+
+                                $release_qty = max( 0, ( $current + $new_qty ) - $order_qty );
+
+                                // Reassign displaced orders to later POs/backorder using remaining free stock.
+                                $reassignments = self::reassign_displaced( $displaced, $normalized );
+
+                                $items_plan[] = array(
+                                        'item_id'        => (int) $item->get_id(),
+                                        'product_id'     => $target_id,
+                                        'name'           => $item->get_name(),
+                                        'current_eta'    => self::item_earliest_eta( $item ),
+                                        'new_eta'        => self::project_new_eta( $item, $vip_allocs ),
+                                        'vip_allocs'     => $vip_allocs,
+                                        'vip_release'    => $release_qty,
+                                        'displacements'  => $reassignments,
+                                );
+                        }
+
+                        return array(
+                                'order_id' => (int) $order_id,
+                                'items'    => $items_plan,
+                        );
+                }
+
+                /**
+                 * Apply stored plan.
+                 */
+                protected static function apply_plan( array $plan ): bool {
+                        if ( empty( $plan['order_id'] ) || empty( $plan['items'] ) ) {
+                                return false;
+                        }
+
+                        $vip_order = wc_get_order( (int) $plan['order_id'] );
+                        if ( ! ( $vip_order instanceof \WC_Order ) ) {
+                                return false;
+                        }
+
+                        $affected_orders = array( (int) $vip_order->get_id() => true );
+
+                        foreach ( $plan['items'] as $item_plan ) {
+                                $item_id = isset( $item_plan['item_id'] ) ? (int) $item_plan['item_id'] : 0;
+                                if ( $item_id <= 0 ) {
+                                        continue;
+                                }
+                                $item = $vip_order->get_item( $item_id );
+                                if ( ! ( $item instanceof \WC_Order_Item_Product ) ) {
+                                        continue;
+                                }
+
+                                self::apply_allocations_to_item( $vip_order, $item, $item_plan );
+
+                                // Apply displacements for other orders.
+                                foreach ( $item_plan['displacements'] as $disp ) {
+                                        $lost_order_id = isset( $disp['order_id'] ) ? (int) $disp['order_id'] : 0;
+                                        $lost_item_id  = isset( $disp['item_id'] ) ? (int) $disp['item_id'] : 0;
+                                        if ( $lost_order_id <= 0 || $lost_item_id <= 0 ) {
+                                                continue;
+                                        }
+                                        $lost_order = wc_get_order( $lost_order_id );
+                                        if ( ! ( $lost_order instanceof \WC_Order ) ) {
+                                                continue;
+                                        }
+                                        $lost_item = $lost_order->get_item( $lost_item_id );
+                                        if ( ! ( $lost_item instanceof \WC_Order_Item_Product ) ) {
+                                                continue;
+                                        }
+
+                                        $qty_taken = isset( $disp['qty_taken'] ) ? max( 0, (int) $disp['qty_taken'] ) : 0;
+                                        $from_po   = isset( $disp['from_po'] ) ? (int) $disp['from_po'] : 0;
+                                        if ( $qty_taken > 0 && $from_po > 0 ) {
+                                                self::release_from_po( $lost_item, $from_po, $qty_taken );
+                                        }
+
+                                        if ( ! empty( $disp['new_allocs'] ) ) {
+                                                foreach ( $disp['new_allocs'] as $add ) {
+                                                        $qty_add = isset( $add['qty'] ) ? max( 0, (int) $add['qty'] ) : 0;
+                                                        $po_id   = isset( $add['po_id'] ) ? (int) $add['po_id'] : 0;
+                                                        if ( $qty_add > 0 && $po_id > 0 ) {
+                                                                self::add_allocation_row( $lost_order, $lost_item, $po_id, (string) ( $add['po_number'] ?? '' ), (string) ( $add['eta'] ?? '' ), $qty_add );
+                                                        }
+                                                }
+                                        }
+
+                                        $note = sprintf(
+                                                /* translators: 1: qty, 2: product name, 3: ETA or backorder */
+                                                __( 'Allocation adjusted by VIP order: moved %1$dx %2$s to later supply (new ETA: %3$s).', 'lpr-backorder-allocator' ),
+                                                (int) $qty_taken,
+                                                $lost_item->get_name(),
+                                                ! empty( $disp['new_eta'] ) ? $disp['new_eta'] : __( 'backorder', 'lpr-backorder-allocator' )
+                                        );
+                                        $lost_order->add_order_note( $note, false, true );
+                                        $lost_order->save();
+                                        $affected_orders[ (int) $lost_order->get_id() ] = true;
+                                }
+                        }
+
+                        // Refresh ETA for all touched orders and resync PO line tallies.
+                        if ( class_exists( __NAMESPACE__ . '\ETA' ) ) {
+                                foreach ( array_keys( $affected_orders ) as $oid ) {
+                                        ETA::update_line_eta( (int) $oid );
+                                }
+                        }
+
+                        foreach ( array_keys( $affected_orders ) as $oid ) {
+                                if ( function_exists( __NAMESPACE__ . '\lpr_allocator_reapply_po_allocations_for_order' ) ) {
+                                        lpr_allocator_reapply_po_allocations_for_order( (int) $oid );
+                                }
+                        }
+
+                        return true;
+                }
+
+                /**
+                 * Apply VIP allocations and release adjustments for a specific item.
+                 */
+                protected static function apply_allocations_to_item( \WC_Order $order, \WC_Order_Item_Product $item, array $plan ): void {
+                        $meta_key = defined( __NAMESPACE__ . '\ORDER_ITEM_META_ALLOCATIONS' ) ? ORDER_ITEM_META_ALLOCATIONS : 'lpr_allocations';
+                        $allocs   = $item->get_meta( $meta_key, true );
+                        if ( ! is_array( $allocs ) ) {
+                                $allocs = array();
+                        }
+
+                        $added_total = 0;
+                        foreach ( $plan['vip_allocs'] as $add ) {
+                                $qty_add = isset( $add['qty'] ) ? max( 0, (int) $add['qty'] ) : 0;
+                                $po_id   = isset( $add['po_id'] ) ? (int) $add['po_id'] : 0;
+                                if ( $qty_add <= 0 || $po_id <= 0 ) {
+                                        continue;
+                                }
+
+                                $row = array(
+                                        'po_id'         => $po_id,
+                                        'po_number'     => isset( $add['po_number'] ) ? (string) $add['po_number'] : '',
+                                        'qty_allocated' => (int) $qty_add,
+                                        'eta'           => isset( $add['eta'] ) ? (string) $add['eta'] : '',
+                                        'status'        => 'reserved',
+                                        'allocated_at'  => current_time( 'mysql' ),
+                                );
+
+                                $allocs[] = $row;
+                                lpr_allocator_index_po_allocation( $po_id, (int) $order->get_id(), (int) $item->get_id() );
+                                $added_total += $qty_add;
+                        }
+
+                        // Release from latest allocations to keep totals aligned with order quantity.
+                        $release_qty = isset( $plan['vip_release'] ) ? max( 0, (int) $plan['vip_release'] ) : 0;
+                        if ( $release_qty > 0 ) {
+                                $allocs = self::release_from_latest( $allocs, $release_qty );
+                        }
+
+                        $item->update_meta_data( $meta_key, $allocs );
+                        $item->save();
+
+                        if ( $added_total > 0 ) {
+                                $note = sprintf(
+                                        /* translators: 1: qty, 2: product name */
+                                        __( 'VIP prioritization pulled %1$dx %2$s to the earliest available PO.', 'lpr-backorder-allocator' ),
+                                        (int) $added_total,
+                                        $item->get_name()
+                                );
+                                $order->add_order_note( $note, false, true );
+                        }
+                }
+
+                /**
+                 * Release allocation quantities from the latest ETA rows.
+                 *
+                 * @param array $allocs
+                 * @param int   $qty
+                 * @return array
+                 */
+                protected static function release_from_latest( array $allocs, int $qty ): array {
+                        if ( $qty <= 0 ) {
+                                return $allocs;
+                        }
+
+                        usort(
+                                $allocs,
+                                static function ( $a, $b ) {
+                                        $ea = isset( $a['eta'] ) ? (string) $a['eta'] : '';
+                                        $eb = isset( $b['eta'] ) ? (string) $b['eta'] : '';
+                                        if ( $ea === $eb ) {
+                                                return 0;
+                                        }
+                                        if ( '' === $ea ) {
+                                                return 1;
+                                        }
+                                        if ( '' === $eb ) {
+                                                return -1;
+                                        }
+                                        return strcmp( $eb, $ea ); // latest first
+                                }
+                        );
+
+                        foreach ( $allocs as &$row ) {
+                                if ( $qty <= 0 ) {
+                                        break;
+                                }
+                                $status = isset( $row['status'] ) ? sanitize_key( (string) $row['status'] ) : 'reserved';
+                                if ( 'released' === $status ) {
+                                        continue;
+                                }
+                                $row_qty = isset( $row['qty_allocated'] ) ? max( 0, (int) $row['qty_allocated'] ) : 0;
+                                if ( $row_qty <= 0 ) {
+                                        continue;
+                                }
+                                if ( $qty >= $row_qty ) {
+                                        $row['status'] = 'released';
+                                        $qty          -= $row_qty;
+                                } else {
+                                        $row['qty_allocated'] = $row_qty - $qty;
+                                        $qty                  = 0;
+                                }
+                        }
+                        unset( $row );
+
+                        return $allocs;
+                }
+
+                /**
+                 * Release a specific quantity tied to a PO from an item.
+                 */
+                protected static function release_from_po( \WC_Order_Item_Product $item, int $po_id, int $qty ): void {
+                        if ( $po_id <= 0 || $qty <= 0 ) {
+                                return;
+                        }
+                        $meta_key = defined( __NAMESPACE__ . '\ORDER_ITEM_META_ALLOCATIONS' ) ? ORDER_ITEM_META_ALLOCATIONS : 'lpr_allocations';
+                        $allocs   = $item->get_meta( $meta_key, true );
+                        if ( ! is_array( $allocs ) ) {
+                                return;
+                        }
+
+                        foreach ( $allocs as &$row ) {
+                                if ( $qty <= 0 ) {
+                                        break;
+                                }
+                                $status = isset( $row['status'] ) ? sanitize_key( (string) $row['status'] ) : 'reserved';
+                                if ( 'released' === $status ) {
+                                        continue;
+                                }
+                                $row_po  = isset( $row['po_id'] ) ? (int) $row['po_id'] : 0;
+                                $row_qty = isset( $row['qty_allocated'] ) ? max( 0, (int) $row['qty_allocated'] ) : 0;
+                                if ( $row_po !== $po_id || $row_qty <= 0 ) {
+                                        continue;
+                                }
+                                if ( $qty >= $row_qty ) {
+                                        $row['status'] = 'released';
+                                        $qty          -= $row_qty;
+                                } else {
+                                        $row['qty_allocated'] = $row_qty - $qty;
+                                        $qty                  = 0;
+                                }
+                        }
+                        unset( $row );
+
+                        $item->update_meta_data( $meta_key, $allocs );
+                        $item->save();
+                }
+
+                /**
+                 * Add a fresh allocation row.
+                 */
+                protected static function add_allocation_row( \WC_Order $order, \WC_Order_Item_Product $item, int $po_id, string $po_number, string $eta, int $qty ): void {
+                        $meta_key = defined( __NAMESPACE__ . '\ORDER_ITEM_META_ALLOCATIONS' ) ? ORDER_ITEM_META_ALLOCATIONS : 'lpr_allocations';
+                        $allocs   = $item->get_meta( $meta_key, true );
+                        if ( ! is_array( $allocs ) ) {
+                                $allocs = array();
+                        }
+
+                        $allocs[] = array(
+                                'po_id'         => $po_id,
+                                'po_number'     => $po_number,
+                                'qty_allocated' => (int) $qty,
+                                'eta'           => $eta,
+                                'status'        => 'reserved',
+                                'allocated_at'  => current_time( 'mysql' ),
+                        );
+
+                        $item->update_meta_data( $meta_key, $allocs );
+                        $item->save();
+
+                        lpr_allocator_index_po_allocation( $po_id, (int) $order->get_id(), (int) $item->get_id() );
+                }
+
+                /**
+                 * Generate preview modal HTML.
+                 */
+                protected static function render_preview_modal( array $plan, string $plan_key, string $nonce ): string {
+                        ob_start();
+                        ?>
+                        <div class="lpr-vip-modal">
+                                <header>
+                                        <h3><?php echo esc_html__( 'VIP prioritization preview', 'lpr-backorder-allocator' ); ?></h3>
+                                        <a href="#" class="lpr-vip-cancel" aria-label="<?php esc_attr_e( 'Close', 'lpr-backorder-allocator' ); ?>">&times;</a>
+                                </header>
+                                <div class="lpr-vip-body">
+                                        <table>
+                                                <thead>
+                                                        <tr>
+                                                                <th><?php echo esc_html__( 'Product', 'lpr-backorder-allocator' ); ?></th>
+                                                                <th><?php echo esc_html__( 'VIP current ETA', 'lpr-backorder-allocator' ); ?></th>
+                                                                <th><?php echo esc_html__( 'VIP new ETA', 'lpr-backorder-allocator' ); ?></th>
+                                                                <th><?php echo esc_html__( 'Qty to move', 'lpr-backorder-allocator' ); ?></th>
+                                                                <th><?php echo esc_html__( 'Order losing allocation', 'lpr-backorder-allocator' ); ?></th>
+                                                                <th><?php echo esc_html__( 'Losing order ETA', 'lpr-backorder-allocator' ); ?></th>
+                                                                <th><?php echo esc_html__( 'New ETA after move', 'lpr-backorder-allocator' ); ?></th>
+                                                                <th><?php echo esc_html__( 'Qty taken', 'lpr-backorder-allocator' ); ?></th>
+                                                        </tr>
+                                                </thead>
+                                                <tbody>
+                                                <?php foreach ( $plan['items'] as $item ) :
+                                                        $vip_qty = 0;
+                                                        foreach ( $item['vip_allocs'] as $a ) {
+                                                                $vip_qty += (int) ( $a['qty'] ?? 0 );
+                                                        }
+                                                        $rows = ! empty( $item['displacements'] ) ? $item['displacements'] : array( array() );
+                                                        foreach ( $rows as $row ) :
+                                                                $loss_eta = isset( $row['current_eta'] ) ? (string) $row['current_eta'] : '';
+                                                                $new_eta  = isset( $row['new_eta'] ) ? (string) $row['new_eta'] : '';
+                                                                ?>
+                                                                <tr>
+                                                                        <td><?php echo esc_html( $item['name'] ); ?></td>
+                                                                        <td><?php echo esc_html( $item['current_eta'] ?: '—' ); ?></td>
+                                                                        <td><?php echo esc_html( $item['new_eta'] ?: '—' ); ?></td>
+                                                                        <td><?php echo esc_html( (string) $vip_qty ); ?></td>
+                                                                        <td><?php echo esc_html( $row['order_number'] ?? '—' ); ?></td>
+                                                                        <td><?php echo esc_html( $loss_eta ?: '—' ); ?></td>
+                                                                        <td><?php echo esc_html( $new_eta ?: __( 'backorder', 'lpr-backorder-allocator' ) ); ?></td>
+                                                                        <td><?php echo esc_html( isset( $row['qty_taken'] ) ? (string) $row['qty_taken'] : '0' ); ?></td>
+                                                                </tr>
+                                                        <?php endforeach; ?>
+                                                <?php endforeach; ?>
+                                                </tbody>
+                                        </table>
+                                        <p><?php echo esc_html__( 'No changes have been made yet. Confirm to apply this exact allocation plan.', 'lpr-backorder-allocator' ); ?></p>
+                                </div>
+                                <div class="lpr-actions">
+                                        <button type="button" class="button button-secondary lpr-vip-cancel"><?php echo esc_html__( 'Cancel', 'lpr-backorder-allocator' ); ?></button>
+                                        <button type="button" class="button button-primary lpr-vip-confirm" data-plan="<?php echo esc_attr( $plan_key ); ?>" data-nonce="<?php echo esc_attr( $nonce ); ?>"><?php echo esc_html__( 'Confirm', 'lpr-backorder-allocator' ); ?></button>
+                                </div>
+                        </div>
+                        <?php
+                        return ob_get_clean();
+                }
+
+                /**
+                 * Normalize incoming entries for a product.
+                 */
+                protected static function normalize_entries( array $entries, int $target_id, int $vip_order_id ): array {
+                        $normalized = array();
+
+                        foreach ( $entries as $entry ) {
+                                $po_id     = isset( $entry['po_id'] ) ? (int) $entry['po_id'] : 0;
+                                $po_number = isset( $entry['po_number'] ) ? (string) $entry['po_number'] : '';
+                                $eta       = lpr_allocator_sanitize_ymd( (string) ( $entry['eta'] ?? '' ) );
+                                $free      = isset( $entry['qty_free'] ) ? max( 0, (int) $entry['qty_free'] ) : 0;
+
+                                if ( $po_id <= 0 || '' === $eta ) {
+                                        continue;
+                                }
+
+                                $normalized[] = array(
+                                        'po_id'      => $po_id,
+                                        'po_number'  => $po_number,
+                                        'eta'        => $eta,
+                                        'free'       => $free,
+                                        'borrowable' => self::collect_po_allocations( $po_id, $target_id, $vip_order_id ),
+                                );
+                        }
+
+                        usort(
+                                $normalized,
+                                static function ( $a, $b ) {
+                                        $ae = $a['eta'] ?? '';
+                                        $be = $b['eta'] ?? '';
+                                        if ( $ae === $be ) {
+                                                return ( $a['po_id'] ?? 0 ) <=> ( $b['po_id'] ?? 0 );
+                                        }
+                                        if ( '' === $ae ) {
+                                                return 1;
+                                        }
+                                        if ( '' === $be ) {
+                                                return -1;
+                                        }
+                                        return strcmp( $ae, $be );
+                                }
+                        );
+
+                        return $normalized;
+                }
+
+                /**
+                 * Collect allocations for a PO/product that could be borrowed (latest orders first).
+                 */
+                protected static function collect_po_allocations( int $po_id, int $target_id, int $vip_order_id ): array {
+                        $borrowable = array();
+
+                        if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_get_po_allocation_index' ) ) {
+                                return $borrowable;
+                        }
+
+                        $index = lpr_allocator_get_po_allocation_index( $po_id );
+                        foreach ( $index as $entry ) {
+                                $oid = isset( $entry['order_id'] ) ? (int) $entry['order_id'] : 0;
+                                $iid = isset( $entry['item_id'] ) ? (int) $entry['item_id'] : 0;
+                                if ( $oid <= 0 || $iid <= 0 || $oid === $vip_order_id ) {
+                                        continue;
+                                }
+                                $order = wc_get_order( $oid );
+                                if ( ! ( $order instanceof \WC_Order ) ) {
+                                        continue;
+                                }
+                                $item = $order->get_item( $iid );
+                                if ( ! ( $item instanceof \WC_Order_Item_Product ) ) {
+                                        continue;
+                                }
+
+                                $match = false;
+                                $vid   = (int) $item->get_variation_id();
+                                $pid   = (int) $item->get_product_id();
+                                if ( $vid > 0 ) {
+                                        $match = ( $vid === $target_id );
+                                } else {
+                                        $match = ( $pid === $target_id );
+                                }
+                                if ( ! $match ) {
+                                        continue;
+                                }
+
+                                $meta_key = defined( __NAMESPACE__ . '\ORDER_ITEM_META_ALLOCATIONS' ) ? ORDER_ITEM_META_ALLOCATIONS : 'lpr_allocations';
+                                $allocs   = $item->get_meta( $meta_key, true );
+                                if ( ! is_array( $allocs ) ) {
+                                        continue;
+                                }
+
+                                $qty_on_po = 0;
+                                foreach ( $allocs as $row ) {
+                                        $status = isset( $row['status'] ) ? sanitize_key( (string) $row['status'] ) : 'reserved';
+                                        if ( 'released' === $status ) {
+                                                continue;
+                                        }
+                                        $row_po = isset( $row['po_id'] ) ? (int) $row['po_id'] : 0;
+                                        if ( $row_po !== $po_id ) {
+                                                continue;
+                                        }
+                                        $qty_on_po += isset( $row['qty_allocated'] ) ? max( 0, (int) $row['qty_allocated'] ) : 0;
+                                }
+
+                                if ( $qty_on_po <= 0 ) {
+                                        continue;
+                                }
+
+                                $borrowable[] = array(
+                                        'order_id'     => $oid,
+                                        'item_id'      => $iid,
+                                        'qty'          => $qty_on_po,
+                                        'order_date'   => $order->get_date_created() ? $order->get_date_created()->getTimestamp() : 0,
+                                        'order_number' => $order->get_order_number(),
+                                        'current_eta'  => self::item_earliest_eta( $item ),
+                                        'po_id'        => $po_id,
+                                );
+                        }
+
+                        usort(
+                                $borrowable,
+                                static function ( $a, $b ) {
+                                        return ( $b['order_date'] ?? 0 ) <=> ( $a['order_date'] ?? 0 );
+                                }
+                        );
+
+                        return $borrowable;
+                }
+
+                /**
+                 * Pull quantity from a PO entry (free first, then latest orders on that PO).
+                 */
+                protected static function pull_from_entry( array &$entry, int $needed, int $vip_order_id, array &$displaced ): int {
+                        $allocated = 0;
+                        if ( $needed <= 0 ) {
+                                return 0;
+                        }
+
+                        $use_free = min( $needed, $entry['free'] );
+                        $entry['free'] -= $use_free;
+                        $needed        -= $use_free;
+                        $allocated     += $use_free;
+
+                        foreach ( $entry['borrowable'] as &$row ) {
+                                if ( $needed <= 0 ) {
+                                        break;
+                                }
+                                $take = min( $needed, $row['qty'] );
+                                if ( $take <= 0 ) {
+                                        continue;
+                                }
+
+                                $row['qty'] -= $take;
+                                $needed     -= $take;
+                                $allocated  += $take;
+
+                                $displaced[] = array(
+                                        'order_id'     => $row['order_id'],
+                                        'item_id'      => $row['item_id'],
+                                        'order_number' => $row['order_number'],
+                                        'qty_taken'    => $take,
+                                        'current_eta'  => $row['current_eta'],
+                                        'from_po'      => $entry['po_id'],
+                                );
+                        }
+                        unset( $row );
+
+                        return $allocated;
+                }
+
+                /**
+                 * Reassign displaced quantities to later POs or backorder.
+                 */
+                protected static function reassign_displaced( array $displaced, array &$entries ): array {
+                        $result = array();
+
+                        foreach ( $displaced as $row ) {
+                                $qty = isset( $row['qty_taken'] ) ? max( 0, (int) $row['qty_taken'] ) : 0;
+                                if ( $qty <= 0 ) {
+                                        continue;
+                                }
+
+                                $new_eta   = '';
+                                $new_alloc = array();
+
+                                // Find the index of the PO we took from to only use later POs.
+                                $start_index = 0;
+                                foreach ( $entries as $idx => $entry ) {
+                                        if ( (int) $entry['po_id'] === (int) $row['from_po'] ) {
+                                                $start_index = $idx + 1;
+                                                break;
+                                        }
+                                }
+
+                                for ( $i = $start_index; $i < count( $entries ) && $qty > 0; $i++ ) {
+                                        $avail = $entries[ $i ]['free'];
+                                        if ( $avail <= 0 ) {
+                                                continue;
+                                        }
+                                        $take = min( $qty, $avail );
+                                        $entries[ $i ]['free'] -= $take;
+                                        $qty                   -= $take;
+
+                                        $new_alloc[] = array(
+                                                'po_id'     => $entries[ $i ]['po_id'],
+                                                'po_number' => $entries[ $i ]['po_number'],
+                                                'eta'       => $entries[ $i ]['eta'],
+                                                'qty'       => $take,
+                                        );
+
+                                        if ( '' === $new_eta ) {
+                                                $new_eta = $entries[ $i ]['eta'];
+                                        }
+                                }
+
+                                if ( $qty > 0 ) {
+                                        $new_eta = '';
+                                }
+
+                                $row['new_eta']   = $new_eta;
+                                $row['new_allocs'] = $new_alloc;
+                                $result[]          = $row;
+                        }
+
+                        return $result;
+                }
+
+                /**
+                 * Map current allocations per PO for an item.
+                 */
+                protected static function current_po_map( \WC_Order_Item_Product $item ): array {
+                        $meta_key = defined( __NAMESPACE__ . '\ORDER_ITEM_META_ALLOCATIONS' ) ? ORDER_ITEM_META_ALLOCATIONS : 'lpr_allocations';
+                        $allocs   = $item->get_meta( $meta_key, true );
+                        if ( ! is_array( $allocs ) ) {
+                                return array();
+                        }
+                        $map = array();
+                        foreach ( $allocs as $row ) {
+                                $status = isset( $row['status'] ) ? sanitize_key( (string) $row['status'] ) : 'reserved';
+                                if ( 'released' === $status ) {
+                                        continue;
+                                }
+                                $po_id = isset( $row['po_id'] ) ? (int) $row['po_id'] : 0;
+                                if ( $po_id <= 0 ) {
+                                        continue;
+                                }
+                                $qty = isset( $row['qty_allocated'] ) ? max( 0, (int) $row['qty_allocated'] ) : 0;
+                                if ( $qty <= 0 ) {
+                                        continue;
+                                }
+                                if ( ! isset( $map[ $po_id ] ) ) {
+                                        $map[ $po_id ] = 0;
+                                }
+                                $map[ $po_id ] += $qty;
+                        }
+                        return $map;
+                }
+
+                /**
+                 * Calculate earliest ETA for an item.
+                 */
+                protected static function item_earliest_eta( \WC_Order_Item_Product $item ): string {
+                        $meta_key = defined( __NAMESPACE__ . '\ORDER_ITEM_META_ALLOCATIONS' ) ? ORDER_ITEM_META_ALLOCATIONS : 'lpr_allocations';
+                        $allocs   = $item->get_meta( $meta_key, true );
+                        $earliest = '';
+                        if ( is_array( $allocs ) ) {
+                                foreach ( $allocs as $row ) {
+                                        $status = isset( $row['status'] ) ? sanitize_key( (string) $row['status'] ) : 'reserved';
+                                        if ( 'released' === $status ) {
+                                                continue;
+                                        }
+                                        $eta_row = '';
+                                        if ( ! empty( $row['eta'] ) ) {
+                                                $eta_row = lpr_allocator_sanitize_ymd( (string) $row['eta'] );
+                                        }
+                                        if ( '' === $eta_row && ! empty( $row['po_id'] ) ) {
+                                                $eta_row = lpr_allocator_sanitize_ymd( (string) get_post_meta( (int) $row['po_id'], defined( __NAMESPACE__ . '\PO_META_ETA_DATE' ) ? PO_META_ETA_DATE : '_lpr_eta_date', true ) );
+                                        }
+                                        if ( '' === $eta_row ) {
+                                                continue;
+                                        }
+                                        if ( '' === $earliest || strcmp( $eta_row, $earliest ) < 0 ) {
+                                                $earliest = $eta_row;
+                                        }
+                                }
+                        }
+                        return $earliest;
+                }
+
+                /**
+                 * Estimate new ETA after applying allocations.
+                 */
+                protected static function project_new_eta( \WC_Order_Item_Product $item, array $vip_allocs ): string {
+                        $eta = self::item_earliest_eta( $item );
+                        foreach ( $vip_allocs as $row ) {
+                                $eta_row = lpr_allocator_sanitize_ymd( (string) ( $row['eta'] ?? '' ) );
+                                if ( '' === $eta_row ) {
+                                        continue;
+                                }
+                                if ( '' === $eta || strcmp( $eta_row, $eta ) < 0 ) {
+                                        $eta = $eta_row;
+                                }
+                        }
+                        return $eta;
+                }
+        }
+        Order_VIP_Prioritizer::init();
 }
 
 if ( ! class_exists( __NAMESPACE__ . '\Requested_Delivery_Date_Box' ) ) {
