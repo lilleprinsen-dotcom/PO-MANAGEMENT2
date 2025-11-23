@@ -2312,7 +2312,8 @@ if ( ! class_exists( __NAMESPACE__ . '\Order_VIP_Prioritizer' ) ) {
                                 return array();
                         }
 
-                        $items_plan = array();
+                        $items_plan      = array();
+                        $backorder_lines = function_exists( __NAMESPACE__ . '\lpr_allocator_count_backorder_lines' ) ? lpr_allocator_count_backorder_lines( $order ) : 0;
 
                         foreach ( $order->get_items( 'line_item' ) as $item ) {
                                 if ( ! ( $item instanceof \WC_Order_Item_Product ) ) {
@@ -2397,16 +2398,17 @@ if ( ! class_exists( __NAMESPACE__ . '\Order_VIP_Prioritizer' ) ) {
                                 }
 
                                         $items_plan[] = array(
-                                                'item_id'        => (int) $item->get_id(),
-                                                'product_id'     => $target_id,
-                                                'name'           => $item->get_name(),
-                                                'current_eta'    => self::item_earliest_eta( $item ),
-                                                'new_eta'        => self::project_new_eta( $item, $vip_allocs ),
-                                                'vip_allocs'     => $vip_allocs,
-                                                'vip_release'    => $release_qty,
-                                                'displacements'  => $reassignments,
-                                                'sources'        => $available_sources,
-                                                'selected_source'=> $preferred_order,
+                                                'item_id'             => (int) $item->get_id(),
+                                                'product_id'          => $target_id,
+                                                'name'                => $item->get_name(),
+                                                'current_eta'         => self::item_earliest_eta( $item ),
+                                                'new_eta'             => self::project_new_eta( $item, $vip_allocs ),
+                                                'vip_allocs'          => $vip_allocs,
+                                                'vip_release'         => $release_qty,
+                                                'displacements'       => $reassignments,
+                                                'sources'             => $available_sources,
+                                                'selected_source'     => $preferred_order,
+                                                'order_backorder_lines' => $backorder_lines,
                                         );
                                 }
 
@@ -3651,6 +3653,50 @@ if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_calc_backorder_need' ) )
 	}
 }
 
+if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_count_backorder_lines' ) ) {
+        /**
+         * Count how many line items on an order are still on backorder (need allocation or awaiting PO supply).
+         */
+        function lpr_allocator_count_backorder_lines( \WC_Order $order ): int {
+                if ( ! ( $order instanceof \WC_Order ) ) {
+                        return 0;
+                }
+
+                $count = 0;
+
+                foreach ( $order->get_items( 'line_item' ) as $item ) {
+                        if ( ! ( $item instanceof \WC_Order_Item_Product ) ) {
+                                continue;
+                        }
+
+                        $need = lpr_allocator_calc_backorder_need( $item );
+                        if ( $need > 0 ) {
+                                $count++;
+                                continue;
+                        }
+
+                        $meta_key = defined( __NAMESPACE__ . '\ORDER_ITEM_META_ALLOCATIONS' ) ? ORDER_ITEM_META_ALLOCATIONS : 'lpr_allocations';
+                        $allocs   = $item->get_meta( $meta_key, true );
+                        if ( ! is_array( $allocs ) ) {
+                                continue;
+                        }
+
+                        foreach ( $allocs as $row ) {
+                                $status = isset( $row['status'] ) ? sanitize_key( (string) $row['status'] ) : 'reserved';
+                                if ( 'released' === $status ) {
+                                        continue;
+                                }
+                                if ( isset( $row['qty_allocated'] ) && (int) $row['qty_allocated'] > 0 ) {
+                                        $count++;
+                                        break;
+                                }
+                        }
+                }
+
+                return $count;
+        }
+}
+
 if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
 	/**
 	 * FIFO allocator that assigns PO quantities to backordered order items (ledger only).
@@ -4011,11 +4057,18 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
 					if ( ! ( $order instanceof \WC_Order ) ) {
 						continue;
 					}
-                                        $paid    = $order->get_date_paid();
-                                        $created = $order->get_date_created();
-                                        $paid_ts = $paid ? (int) $paid->getTimestamp() : null;
+                                        $paid     = $order->get_date_paid();
+                                        $created  = $order->get_date_created();
+                                        $paid_ts  = $paid ? (int) $paid->getTimestamp() : null;
                                         $created_ts = $created ? (int) $created->getTimestamp() : 0;
-                                        $ready_by   = self::requested_ready_by( $order );
+                                        $ready_by    = self::requested_ready_by( $order );
+                                        $backorder_lines = function_exists( __NAMESPACE__ . '\lpr_allocator_count_backorder_lines' ) ? lpr_allocator_count_backorder_lines( $order ) : 0;
+                                        if ( $backorder_lines > 1 ) {
+                                                continue; // Multi-product backorders should keep the earlier allocation.
+                                        }
+                                        if ( $backorder_lines > 1 ) {
+                                                continue; // Multi-product backorders should keep the earlier allocation.
+                                        }
 
                                         foreach ( $order->get_items( 'line_item' ) as $item ) {
                                                 if ( ! ( $item instanceof \WC_Order_Item_Product ) ) {
@@ -4036,6 +4089,10 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                                                 }
 
                                                 $defer_to_later_supply = $ready_by && $po_eta_for_line && strcmp( $po_eta_for_line, $ready_by ) < 0 && self::has_later_supply_within_window( $target_id, $po_eta_for_line, $ready_by );
+                                                if ( $defer_to_later_supply && $backorder_lines > 1 ) {
+                                                        // Keep multi-product backorders in the earliest possible PO.
+                                                        $defer_to_later_supply = false;
+                                                }
                                                 if ( $defer_to_later_supply ) {
                                                         continue;
                                                 }
@@ -4052,6 +4109,7 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                                                         'paid_ts'    => $paid_ts,
                                                         'created_ts' => $created_ts,
                                                         'ready_by'   => $ready_by,
+                                                        'backorder_lines' => $backorder_lines,
                                                 );
                                                 $total_need_collected += (int) $need;
                                                 if ( $total_need_collected >= $required_total ) {
@@ -4280,6 +4338,10 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                                         if ( strcmp( $po_eta_for_line, $ready_by ) > 0 ) {
                                                 continue; // PO would miss the readiness window.
                                         }
+                                        $backorder_lines = function_exists( __NAMESPACE__ . '\lpr_allocator_count_backorder_lines' ) ? lpr_allocator_count_backorder_lines( $order ) : 0;
+                                        if ( $backorder_lines > 1 ) {
+                                                continue; // Multi-product backorders should keep the earlier allocation.
+                                        }
 
                                         foreach ( $order->get_items( 'line_item' ) as $item ) {
                                                 if ( ! ( $item instanceof \WC_Order_Item_Product ) ) {
@@ -4309,10 +4371,11 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                                                 }
 
                                                 $candidates[] = array(
-                                                        'order_id'     => (int) $oid,
-                                                        'item_id'      => (int) $item->get_id(),
-                                                        'qty'          => (int) $summary['total_qty'],
-                                                        'earliest_eta' => $summary['earliest_eta'],
+                                                        'order_id'        => (int) $oid,
+                                                        'item_id'         => (int) $item->get_id(),
+                                                        'qty'             => (int) $summary['total_qty'],
+                                                        'earliest_eta'    => $summary['earliest_eta'],
+                                                        'backorder_lines' => $backorder_lines,
                                                 );
                                         }
                                 }
