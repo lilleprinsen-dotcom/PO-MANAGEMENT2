@@ -2106,6 +2106,8 @@ if ( ! class_exists( __NAMESPACE__ . '\Order_VIP_Prioritizer' ) ) {
                         add_action( 'wp_ajax_lpr_vip_preview', array( __CLASS__, 'ajax_preview' ) );
                         add_action( 'wp_ajax_lpr_vip_confirm', array( __CLASS__, 'ajax_confirm' ) );
                         add_filter( 'woocommerce_order_number', array( __CLASS__, 'add_badge_to_order_number' ), 10, 2 );
+                        add_action( 'manage_shop_order_posts_custom_column', array( __CLASS__, 'render_admin_list_badge' ), 20, 2 );
+                        add_action( 'woocommerce_admin_order_data_after_order_number', array( __CLASS__, 'render_admin_order_header_badge' ) );
                 }
 
                 /**
@@ -2186,10 +2188,39 @@ if ( ! class_exists( __NAMESPACE__ . '\Order_VIP_Prioritizer' ) ) {
                  * Append VIP badge to order numbers across admin/front-end surfaces.
                  */
                 public static function add_badge_to_order_number( $number, $order ): string {
+                        if ( is_admin() && ! wp_doing_ajax() ) {
+                                return (string) $number;
+                        }
+
                         if ( $order instanceof \WC_Order && self::is_vip_order( $order ) ) {
                                 return (string) $number . ' ' . self::vip_badge_html();
                         }
                         return (string) $number;
+                }
+
+                /**
+                 * Append VIP badge in the orders list after the order number.
+                 */
+                public static function render_admin_list_badge( string $column, $post_id ): void {
+                        if ( 'order_number' !== $column ) {
+                                return;
+                        }
+
+                        $order = \wc_get_order( $post_id );
+                        if ( ! $order instanceof \WC_Order || ! self::is_vip_order( $order ) ) {
+                                return;
+                        }
+
+                        echo ' ' . self::vip_badge_html();
+                }
+
+                /**
+                 * Add VIP badge beside the order number on the order edit screen.
+                 */
+                public static function render_admin_order_header_badge( $order ): void {
+                        if ( $order instanceof \WC_Order && self::is_vip_order( $order ) ) {
+                                echo ' ' . self::vip_badge_html();
+                        }
                 }
 
                 /**
