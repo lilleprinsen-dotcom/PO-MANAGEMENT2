@@ -20,13 +20,16 @@ if ( ! defined( __NAMESPACE__ . '\DB_VERSION_OPTION' ) ) {
  * Meta key constants (guarded).
  */
 if ( ! defined( __NAMESPACE__ . '\ORDER_ITEM_META_LINE_ETA' ) ) {
-	define( __NAMESPACE__ . '\ORDER_ITEM_META_LINE_ETA', '_lpr_line_eta' );
+        define( __NAMESPACE__ . '\ORDER_ITEM_META_LINE_ETA', '_lpr_line_eta' );
 }
 if ( ! defined( __NAMESPACE__ . '\ORDER_ITEM_META_ALLOCATIONS' ) ) {
-	define( __NAMESPACE__ . '\ORDER_ITEM_META_ALLOCATIONS', 'lpr_allocations' );
+        define( __NAMESPACE__ . '\ORDER_ITEM_META_ALLOCATIONS', 'lpr_allocations' );
+}
+if ( ! defined( __NAMESPACE__ . '\ORDER_META_REQUESTED_DELIVERY' ) ) {
+        define( __NAMESPACE__ . '\ORDER_META_REQUESTED_DELIVERY', '_lpr_requested_delivery_date' );
 }
 if ( ! defined( __NAMESPACE__ . '\PRODUCT_META_UNALLOCATED_POOL' ) ) {
-	define( __NAMESPACE__ . '\PRODUCT_META_UNALLOCATED_POOL', '_lpr_unallocated_pool' );
+        define( __NAMESPACE__ . '\PRODUCT_META_UNALLOCATED_POOL', '_lpr_unallocated_pool' );
 }
 if ( ! defined( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_QTY' ) ) {
         define( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_QTY', '_lpr_next_extra_qty' );
@@ -1770,7 +1773,117 @@ if ( ! class_exists( __NAMESPACE__ . '\Order_Allocations_Metabox' ) ) {
 			echo '</tbody></table>';
 		}
 	}
-	Order_Allocations_Metabox::init();
+        Order_Allocations_Metabox::init();
+}
+
+if ( ! class_exists( __NAMESPACE__ . '\Requested_Delivery_Date_Box' ) ) {
+        /**
+         * Order admin metabox to capture a requested delivery date.
+         */
+        class Requested_Delivery_Date_Box {
+
+                public static function init(): void {
+                        add_action( 'add_meta_boxes', array( __CLASS__, 'register_box' ), 25 );
+                        add_action( 'add_meta_boxes_shop_order', array( __CLASS__, 'register_box' ), 25 );
+                        add_action( 'add_meta_boxes_woocommerce_page_wc-orders', array( __CLASS__, 'register_box' ), 25 );
+
+                        add_action( 'woocommerce_process_shop_order_meta', array( __CLASS__, 'save_meta' ), 20, 2 );
+                        add_action( 'woocommerce_before_order_object_save', array( __CLASS__, 'maybe_save_meta_from_object' ), 20, 2 );
+                }
+
+                public static function register_box(): void {
+                        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+                                return;
+                        }
+
+                        add_meta_box(
+                                'lpr_requested_delivery',
+                                __( 'Requested Delivery Date', 'lpr-backorder-allocator' ),
+                                array( __CLASS__, 'render_box' ),
+                                'shop_order',
+                                'side',
+                                'default'
+                        );
+
+                        add_meta_box(
+                                'lpr_requested_delivery',
+                                __( 'Requested Delivery Date', 'lpr-backorder-allocator' ),
+                                array( __CLASS__, 'render_box' ),
+                                'woocommerce_page_wc-orders',
+                                'side',
+                                'default'
+                        );
+                }
+
+                public static function render_box( $post_or_screen ): void {
+                        if ( ! function_exists( 'wc_get_order' ) ) {
+                                return;
+                        }
+
+                        $order_id = self::resolve_order_id( $post_or_screen );
+                        $order    = wc_get_order( $order_id );
+                        $value    = '';
+                        if ( $order instanceof \WC_Order ) {
+                                $value = (string) $order->get_meta( defined( __NAMESPACE__ . '\ORDER_META_REQUESTED_DELIVERY' ) ? ORDER_META_REQUESTED_DELIVERY : '_lpr_requested_delivery_date', true );
+                        }
+
+                        wp_nonce_field( 'lpr_requested_delivery', 'lpr_requested_delivery_nonce' );
+
+                        echo '<p>';
+                        echo '<label for="lpr_requested_delivery"><strong>' . esc_html__( 'Requested delivery date (Y-m-d)', 'lpr-backorder-allocator' ) . '</strong></label>';
+                        echo '<br />';
+                        echo '<input type="date" id="lpr_requested_delivery" name="lpr_requested_delivery" value="' . esc_attr( lpr_allocator_sanitize_ymd( $value ) ) . '" pattern="\d{4}-\d{2}-\d{2}" />';
+                        echo '</p>';
+                        echo '<p class="description">' . esc_html__( 'We aim to have the order ready at least 14 days before this date. Leave blank for ASAP.', 'lpr-backorder-allocator' ) . '</p>';
+                }
+
+                public static function save_meta( int $order_id, $order = null ): void {
+                        self::persist_request( $order_id, $order );
+                }
+
+                public static function maybe_save_meta_from_object( $order, $data_store ): void { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.PropertyNotSnakeCase
+                        unset( $data_store );
+                        if ( $order instanceof \WC_Order ) {
+                                self::persist_request( (int) $order->get_id(), $order );
+                        }
+                }
+
+                protected static function persist_request( int $order_id, $order = null ): void {
+                        if ( $order_id <= 0 ) {
+                                return;
+                        }
+
+                        if ( empty( $_POST['lpr_requested_delivery_nonce'] ) || ! wp_verify_nonce( wp_unslash( $_POST['lpr_requested_delivery_nonce'] ), 'lpr_requested_delivery' ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+                                return;
+                        }
+
+                        $raw = isset( $_POST['lpr_requested_delivery'] ) ? (string) wp_unslash( $_POST['lpr_requested_delivery'] ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+                        $val = lpr_allocator_sanitize_ymd( $raw );
+
+                        if ( $order instanceof \WC_Order ) {
+                                $order->update_meta_data( defined( __NAMESPACE__ . '\ORDER_META_REQUESTED_DELIVERY' ) ? ORDER_META_REQUESTED_DELIVERY : '_lpr_requested_delivery_date', $val );
+                                return;
+                        }
+
+                        if ( '' === $val ) {
+                                delete_post_meta( $order_id, defined( __NAMESPACE__ . '\ORDER_META_REQUESTED_DELIVERY' ) ? ORDER_META_REQUESTED_DELIVERY : '_lpr_requested_delivery_date' );
+                        } else {
+                                update_post_meta( $order_id, defined( __NAMESPACE__ . '\ORDER_META_REQUESTED_DELIVERY' ) ? ORDER_META_REQUESTED_DELIVERY : '_lpr_requested_delivery_date', $val );
+                        }
+                }
+
+                protected static function resolve_order_id( $context ): int {
+                        $order_id = 0;
+                        if ( $context instanceof \WP_Post ) {
+                                $order_id = (int) $context->ID;
+                        }
+                        if ( $order_id <= 0 && isset( $_GET['id'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+                                $order_id = absint( $_GET['id'] ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+                        }
+                        return $order_id;
+                }
+        }
+        Requested_Delivery_Date_Box::init();
 }
 
 /* SELF-CHECK:
@@ -2273,22 +2386,24 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
 		 * @param string[] $affected_orders Reference accumulator.
 		 * @return int Total quantity allocated from this line.
 		 */
-		protected static function allocate_for_single_line( int $po_id, string $po_number, string $po_eta_header, int $target_product_or_variation_id, int $remaining_for_line, string $eta_override, array &$affected_orders ): int {
-			if ( $remaining_for_line <= 0 ) {
-				return 0;
-			}
+                protected static function allocate_for_single_line( int $po_id, string $po_number, string $po_eta_header, int $target_product_or_variation_id, int $remaining_for_line, string $eta_override, array &$affected_orders ): int {
+                        if ( $remaining_for_line <= 0 ) {
+                                return 0;
+                        }
 
-			// Build FIFO queue of candidate line items needing allocation.
-			$queue = self::build_fifo_queue( $target_product_or_variation_id, $remaining_for_line );
+                        $eta_for_line = $eta_override ? $eta_override : lpr_allocator_sanitize_ymd( $po_eta_header );
 
-			if ( empty( $queue ) ) {
-				return 0;
-			}
+                        // Build FIFO queue of candidate line items needing allocation.
+                        $queue = self::build_fifo_queue( $target_product_or_variation_id, $remaining_for_line, $eta_for_line );
 
-			$allocated_total = 0;
-			$meta_key_allocs = defined( __NAMESPACE__ . '\ORDER_ITEM_META_ALLOCATIONS' ) ? ORDER_ITEM_META_ALLOCATIONS : 'lpr_allocations';
-			$today_dt        = current_time( 'mysql' );
-			$eta_to_store    = $eta_override ? $eta_override : lpr_allocator_sanitize_ymd( $po_eta_header );
+                        if ( empty( $queue ) ) {
+                                return 0;
+                        }
+
+                        $allocated_total = 0;
+                        $meta_key_allocs = defined( __NAMESPACE__ . '\ORDER_ITEM_META_ALLOCATIONS' ) ? ORDER_ITEM_META_ALLOCATIONS : 'lpr_allocations';
+                        $today_dt        = current_time( 'mysql' );
+                        $eta_to_store    = $eta_for_line;
 
 			foreach ( $queue as $entry ) {
 				if ( $remaining_for_line <= 0 ) {
@@ -2355,30 +2470,71 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
 				);
 				$order->add_order_note( $note, false, true );
 
-				$affected_orders[ (int) $order->get_id() ] = true;
+                                $affected_orders[ (int) $order->get_id() ] = true;
 
-				$remaining_for_line -= $allocate_now;
-				$allocated_total    += $allocate_now;
-			}
+                                $remaining_for_line -= $allocate_now;
+                                $allocated_total    += $allocate_now;
+                        }
 
-			return $allocated_total;
-		}
+                        // Consider reallocation for orders with a requested delivery date where this PO still meets the window
+                        // but is later than their current allocation. Only move stock when it frees earlier supply that can serve
+                        // unallocated orders or improve later ETAs.
+                        if ( $remaining_for_line > 0 && '' !== $eta_for_line ) {
+                                $realloc_candidates = self::collect_reallocation_candidates( $target_product_or_variation_id, $eta_for_line );
 
-		/**
-		 * Build a FIFO queue of order items needing allocation for a given product/variation.
-		 * Sorted by: paid date ASC (fallback created), then created ASC, then order ID ASC.
-		 * Uses server-side pagination and stops once the sum of need >= required_total or no more orders.
-		 *
-		 * @param int $target_id
-		 * @param int $required_total
-		 * @return array[] Each item: [order_id, item_id, need, paid_ts, created_ts]
-		 */
-		protected static function build_fifo_queue( int $target_id, int $required_total ): array {
-			$settings = class_exists( __NAMESPACE__ . '\Settings' ) ? Settings::get() : array( 'order_statuses' => array( 'processing', 'on-hold' ) );
-			$statuses = array();
-			foreach ( (array) $settings['order_statuses'] as $st ) {
-				$statuses[] = 'wc-' . preg_replace( '/^wc-/', '', sanitize_key( $st ) );
-			}
+                                foreach ( $realloc_candidates as $candidate ) {
+                                        if ( $remaining_for_line <= 0 ) {
+                                                break;
+                                        }
+
+                                        if ( ! self::has_priority_demand_for_eta( $target_product_or_variation_id, $candidate['earliest_eta'], $candidate['order_id'], $candidate['item_id'] ) ) {
+                                                continue;
+                                        }
+
+                                        $order = wc_get_order( $candidate['order_id'] );
+                                        if ( ! ( $order instanceof \WC_Order ) ) {
+                                                continue;
+                                        }
+
+                                        $target_item = $order->get_item( $candidate['item_id'] );
+                                        if ( ! ( $target_item instanceof \WC_Order_Item_Product ) ) {
+                                                continue;
+                                        }
+
+                                        $move_qty = min( (int) $candidate['qty'], $remaining_for_line );
+                                        if ( $move_qty <= 0 ) {
+                                                continue;
+                                        }
+
+                                        $moved = self::reallocate_to_later_po( $order, $target_item, $move_qty, $eta_to_store, $po_id, $po_number );
+                                        if ( $moved > 0 ) {
+                                                $affected_orders[ (int) $order->get_id() ] = true;
+                                                $remaining_for_line -= $moved;
+                                                $allocated_total    += $moved;
+                                        }
+                                }
+                        }
+
+                        return $allocated_total;
+                }
+
+                /**
+                 * Build a FIFO queue of order items needing allocation for a given product/variation.
+                 * Sorted by requested ready-by date (ASAP first, then earliest ready_by), then paid date ASC (fallback created),
+                 * then created ASC, then order ID ASC.
+                 * Uses server-side pagination and stops once the sum of need >= required_total or no more orders.
+                 *
+                 * @param int    $target_id
+                 * @param int    $required_total
+                 * @param string $po_eta_for_line Current PO ETA (header or override) for eligibility checks.
+                 * @return array[] Each item: [order_id, item_id, need, paid_ts, created_ts, ready_by]
+                 */
+                protected static function build_fifo_queue( int $target_id, int $required_total, string $po_eta_for_line ): array {
+                        $settings = class_exists( __NAMESPACE__ . '\Settings' ) ? Settings::get() : array( 'order_statuses' => array( 'processing', 'on-hold' ) );
+                        $statuses = array();
+                        foreach ( (array) $settings['order_statuses'] as $st ) {
+                                $statuses[] = 'wc-' . preg_replace( '/^wc-/', '', sanitize_key( $st ) );
+                        }
 
 			$queue = array();
 			$page  = 1;
@@ -2408,15 +2564,16 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
 					if ( ! ( $order instanceof \WC_Order ) ) {
 						continue;
 					}
-					$paid    = $order->get_date_paid();
-					$created = $order->get_date_created();
-					$paid_ts = $paid ? (int) $paid->getTimestamp() : null;
-					$created_ts = $created ? (int) $created->getTimestamp() : 0;
+                                        $paid    = $order->get_date_paid();
+                                        $created = $order->get_date_created();
+                                        $paid_ts = $paid ? (int) $paid->getTimestamp() : null;
+                                        $created_ts = $created ? (int) $created->getTimestamp() : 0;
+                                        $ready_by   = self::requested_ready_by( $order );
 
-					foreach ( $order->get_items( 'line_item' ) as $item ) {
-						if ( ! ( $item instanceof \WC_Order_Item_Product ) ) {
-							continue;
-						}
+                                        foreach ( $order->get_items( 'line_item' ) as $item ) {
+                                                if ( ! ( $item instanceof \WC_Order_Item_Product ) ) {
+                                                        continue;
+                                                }
 						$itm_vid = (int) $item->get_variation_id();
 						$itm_pid = (int) $item->get_product_id();
 						$match   = ( $itm_vid > 0 ) ? ( $itm_vid === $target_id ) : ( $itm_pid === $target_id );
@@ -2431,18 +2588,24 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
 							continue;
 						}
 
-						$queue[] = array(
-							'order_id'   => (int) $oid,
-							'item_id'    => (int) $item->get_id(),
-							'need'       => (int) $need,
-							'paid_ts'    => $paid_ts,
-							'created_ts' => $created_ts,
-						);
-						$total_need_collected += (int) $need;
-						if ( $total_need_collected >= $required_total ) {
-							break 2;
-						}
-					}
+                                                if ( $ready_by && $po_eta_for_line && strcmp( $po_eta_for_line, $ready_by ) > 0 ) {
+                                                        // PO would arrive after the requested readiness window.
+                                                        continue;
+                                                }
+
+                                                $queue[] = array(
+                                                        'order_id'   => (int) $oid,
+                                                        'item_id'    => (int) $item->get_id(),
+                                                        'need'       => (int) $need,
+                                                        'paid_ts'    => $paid_ts,
+                                                        'created_ts' => $created_ts,
+                                                        'ready_by'   => $ready_by,
+                                                );
+                                                $total_need_collected += (int) $need;
+                                                if ( $total_need_collected >= $required_total ) {
+                                                        break 2;
+                                                }
+                                        }
 				}
 
 				$page++;
@@ -2452,23 +2615,371 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
 				return array();
 			}
 
-			usort(
-				$queue,
-				static function ( $a, $b ) {
-					$ap = isset( $a['paid_ts'] ) && null !== $a['paid_ts'] ? (int) $a['paid_ts'] : (int) $a['created_ts'];
-					$bp = isset( $b['paid_ts'] ) && null !== $b['paid_ts'] ? (int) $b['paid_ts'] : (int) $b['created_ts'];
-					if ( $ap !== $bp ) {
-						return $ap <=> $bp;
-					}
-					if ( (int) $a['created_ts'] !== (int) $b['created_ts'] ) {
-						return (int) $a['created_ts'] <=> (int) $b['created_ts'];
-					}
-					return (int) $a['order_id'] <=> (int) $b['order_id'];
-				}
-			);
+                        usort(
+                                $queue,
+                                static function ( $a, $b ) {
+                                        $ar = isset( $a['ready_by'] ) ? (string) $a['ready_by'] : '';
+                                        $br = isset( $b['ready_by'] ) ? (string) $b['ready_by'] : '';
+                                        if ( $ar !== $br ) {
+                                                if ( '' === $ar ) {
+                                                        return -1; // ASAP orders first.
+                                                }
+                                                if ( '' === $br ) {
+                                                        return 1;
+                                                }
+                                                return strcmp( $ar, $br );
+                                        }
 
-			return $queue;
-		}
+                                        $ap = isset( $a['paid_ts'] ) && null !== $a['paid_ts'] ? (int) $a['paid_ts'] : (int) $a['created_ts'];
+                                        $bp = isset( $b['paid_ts'] ) && null !== $b['paid_ts'] ? (int) $b['paid_ts'] : (int) $b['created_ts'];
+                                        if ( $ap !== $bp ) {
+                                                return $ap <=> $bp;
+                                        }
+                                        if ( (int) $a['created_ts'] !== (int) $b['created_ts'] ) {
+                                                return (int) $a['created_ts'] <=> (int) $b['created_ts'];
+                                        }
+                                        return (int) $a['order_id'] <=> (int) $b['order_id'];
+                                }
+                        );
+
+                        return $queue;
+                }
+
+                /**
+                 * Requested ready-by date (requested delivery minus 14 days) or empty string.
+                 */
+                protected static function requested_ready_by( \WC_Order $order ): string {
+                        $requested = '';
+                        if ( defined( __NAMESPACE__ . '\ORDER_META_REQUESTED_DELIVERY' ) ) {
+                                $requested = (string) $order->get_meta( ORDER_META_REQUESTED_DELIVERY, true );
+                        } else {
+                                $requested = (string) $order->get_meta( '_lpr_requested_delivery_date', true );
+                        }
+
+                        $requested = lpr_allocator_sanitize_ymd( $requested );
+                        if ( '' === $requested ) {
+                                return '';
+                        }
+
+                        $ts = strtotime( $requested . ' -14 days' );
+                        if ( false === $ts ) {
+                                return '';
+                        }
+
+                        return gmdate( 'Y-m-d', $ts );
+                }
+
+                /**
+                 * Identify orders that can be reallocated to this PO while respecting requested delivery windows.
+                 *
+                 * @param int    $target_id
+                 * @param string $po_eta_for_line
+                 * @return array[]
+                 */
+                protected static function collect_reallocation_candidates( int $target_id, string $po_eta_for_line ): array {
+                        if ( '' === $po_eta_for_line ) {
+                                return array();
+                        }
+
+                        $settings = class_exists( __NAMESPACE__ . '\Settings' ) ? Settings::get() : array( 'order_statuses' => array( 'processing', 'on-hold' ) );
+                        $statuses = array();
+                        foreach ( (array) $settings['order_statuses'] as $st ) {
+                                $statuses[] = 'wc-' . preg_replace( '/^wc-/', '', sanitize_key( $st ) );
+                        }
+
+                        $candidates = array();
+                        $page       = 1;
+                        $limit      = 50;
+
+                        do {
+                                $args = array(
+                                        'status'  => $statuses,
+                                        'limit'   => $limit,
+                                        'page'    => $page,
+                                        'orderby' => 'date',
+                                        'order'   => 'ASC',
+                                        'return'  => 'ids',
+                                        'type'    => 'shop_order',
+                                );
+                                $order_ids = function_exists( 'wc_get_orders' ) ? wc_get_orders( $args ) : array();
+                                if ( empty( $order_ids ) ) {
+                                        break;
+                                }
+
+                                foreach ( $order_ids as $oid ) {
+                                        $order = wc_get_order( $oid );
+                                        if ( ! ( $order instanceof \WC_Order ) ) {
+                                                continue;
+                                        }
+
+                                        $ready_by = self::requested_ready_by( $order );
+                                        if ( '' === $ready_by ) {
+                                                continue; // only move orders that explicitly provided a requested date.
+                                        }
+                                        if ( strcmp( $po_eta_for_line, $ready_by ) > 0 ) {
+                                                continue; // PO would miss the readiness window.
+                                        }
+
+                                        foreach ( $order->get_items( 'line_item' ) as $item ) {
+                                                if ( ! ( $item instanceof \WC_Order_Item_Product ) ) {
+                                                        continue;
+                                                }
+                                                $itm_vid = (int) $item->get_variation_id();
+                                                $itm_pid = (int) $item->get_product_id();
+                                                $match   = ( $itm_vid > 0 ) ? ( $itm_vid === $target_id ) : ( $itm_pid === $target_id );
+                                                if ( ! $match ) {
+                                                        continue;
+                                                }
+
+                                                // If the item still needs allocation, let the primary queue handle it.
+                                                $need = lpr_allocator_calc_backorder_need( $item );
+                                                if ( $need > 0 ) {
+                                                        continue;
+                                                }
+
+                                                $summary = self::active_allocation_summary( $item );
+                                                if ( $summary['total_qty'] <= 0 || '' === $summary['earliest_eta'] ) {
+                                                        continue;
+                                                }
+
+                                                // Only move if this PO is later (but still acceptable) than the current ETA.
+                                                if ( strcmp( $po_eta_for_line, $summary['earliest_eta'] ) <= 0 ) {
+                                                        continue;
+                                                }
+
+                                                $candidates[] = array(
+                                                        'order_id'     => (int) $oid,
+                                                        'item_id'      => (int) $item->get_id(),
+                                                        'qty'          => (int) $summary['total_qty'],
+                                                        'earliest_eta' => $summary['earliest_eta'],
+                                                );
+                                        }
+                                }
+
+                                $page++;
+                        } while ( count( $order_ids ) === $limit );
+
+                        return $candidates;
+                }
+
+                /**
+                 * Summarize active allocations for an item.
+                 *
+                 * @param \WC_Order_Item_Product $item
+                 * @return array{total_qty:int,earliest_eta:string,active_rows:array<int,array{index:int,qty:int,eta:string}>,allocs:array}
+                 */
+                protected static function active_allocation_summary( \WC_Order_Item_Product $item ): array {
+                        $meta_key = defined( __NAMESPACE__ . '\ORDER_ITEM_META_ALLOCATIONS' ) ? ORDER_ITEM_META_ALLOCATIONS : 'lpr_allocations';
+                        $allocs   = $item->get_meta( $meta_key, true );
+                        if ( ! is_array( $allocs ) ) {
+                                $allocs = array();
+                        }
+
+                        $summary = array(
+                                'total_qty'    => 0,
+                                'earliest_eta' => '',
+                                'active_rows'  => array(),
+                                'allocs'       => $allocs,
+                        );
+
+                        foreach ( $allocs as $idx => $row ) {
+                                $status = isset( $row['status'] ) ? sanitize_key( (string) $row['status'] ) : 'reserved';
+                                if ( 'released' === $status ) {
+                                        continue;
+                                }
+
+                                $qty = isset( $row['qty_allocated'] ) ? max( 0, (int) $row['qty_allocated'] ) : 0;
+                                if ( $qty <= 0 ) {
+                                        continue;
+                                }
+
+                                $eta_row = '';
+                                if ( ! empty( $row['eta'] ) ) {
+                                        $eta_row = lpr_allocator_sanitize_ymd( (string) $row['eta'] );
+                                }
+                                if ( '' === $eta_row ) {
+                                        $po_id = isset( $row['po_id'] ) ? absint( $row['po_id'] ) : 0;
+                                        if ( $po_id > 0 ) {
+                                                $eta_row = lpr_allocator_sanitize_ymd( (string) get_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_ETA_DATE' ) ? PO_META_ETA_DATE : '_lpr_eta_date', true ) );
+                                        }
+                                }
+
+                                $summary['total_qty'] += $qty;
+                                $summary['active_rows'][] = array(
+                                        'index' => (int) $idx,
+                                        'qty'   => $qty,
+                                        'eta'   => $eta_row,
+                                );
+
+                                if ( '' !== $eta_row && ( '' === $summary['earliest_eta'] || strcmp( $eta_row, $summary['earliest_eta'] ) < 0 ) ) {
+                                        $summary['earliest_eta'] = $eta_row;
+                                }
+                        }
+
+                        usort(
+                                $summary['active_rows'],
+                                static function ( $a, $b ) {
+                                        $ae = isset( $a['eta'] ) ? (string) $a['eta'] : '';
+                                        $be = isset( $b['eta'] ) ? (string) $b['eta'] : '';
+                                        if ( $ae === $be ) {
+                                                return 0;
+                                        }
+                                        if ( '' === $ae ) {
+                                                return 1;
+                                        }
+                                        if ( '' === $be ) {
+                                                return -1;
+                                        }
+                                        return strcmp( $ae, $be );
+                                }
+                        );
+
+                        return $summary;
+                }
+
+                /**
+                 * Determine if freeing earlier stock would benefit another order (unallocated or with a later ETA).
+                 */
+                protected static function has_priority_demand_for_eta( int $target_id, string $eta_threshold, int $exclude_order_id, int $exclude_item_id ): bool {
+                        $settings = class_exists( __NAMESPACE__ . '\Settings' ) ? Settings::get() : array( 'order_statuses' => array( 'processing', 'on-hold' ) );
+                        $statuses = array();
+                        foreach ( (array) $settings['order_statuses'] as $st ) {
+                                $statuses[] = 'wc-' . preg_replace( '/^wc-/', '', sanitize_key( $st ) );
+                        }
+
+                        $page  = 1;
+                        $limit = 50;
+
+                        do {
+                                $args = array(
+                                        'status'  => $statuses,
+                                        'limit'   => $limit,
+                                        'page'    => $page,
+                                        'orderby' => 'date',
+                                        'order'   => 'ASC',
+                                        'return'  => 'ids',
+                                        'type'    => 'shop_order',
+                                );
+                                $order_ids = function_exists( 'wc_get_orders' ) ? wc_get_orders( $args ) : array();
+                                if ( empty( $order_ids ) ) {
+                                        break;
+                                }
+
+                                foreach ( $order_ids as $oid ) {
+                                        $order = wc_get_order( $oid );
+                                        if ( ! ( $order instanceof \WC_Order ) ) {
+                                                continue;
+                                        }
+
+                                        foreach ( $order->get_items( 'line_item' ) as $item ) {
+                                                if ( ! ( $item instanceof \WC_Order_Item_Product ) ) {
+                                                        continue;
+                                                }
+                                                if ( (int) $order->get_id() === $exclude_order_id && (int) $item->get_id() === $exclude_item_id ) {
+                                                        continue;
+                                                }
+
+                                                $itm_vid = (int) $item->get_variation_id();
+                                                $itm_pid = (int) $item->get_product_id();
+                                                $match   = ( $itm_vid > 0 ) ? ( $itm_vid === $target_id ) : ( $itm_pid === $target_id );
+                                                if ( ! $match ) {
+                                                        continue;
+                                                }
+
+                                                $need = lpr_allocator_calc_backorder_need( $item );
+                                                if ( $need > 0 ) {
+                                                        return true; // unallocated order can use freed stock.
+                                                }
+
+                                                $summary = self::active_allocation_summary( $item );
+                                                if ( $summary['total_qty'] > 0 && '' !== $summary['earliest_eta'] && strcmp( $summary['earliest_eta'], $eta_threshold ) > 0 ) {
+                                                        return true; // could improve ETA.
+                                                }
+                                        }
+                                }
+
+                                $page++;
+                        } while ( count( $order_ids ) === $limit );
+
+                        return false;
+                }
+
+                /**
+                 * Move an allocated item to the current PO, releasing earlier stock.
+                 */
+                protected static function reallocate_to_later_po( \WC_Order $order, \WC_Order_Item_Product $item, int $move_qty, string $eta_to_store, int $po_id, string $po_number ): int {
+                        if ( $move_qty <= 0 ) {
+                                return 0;
+                        }
+
+                        $meta_key_allocs = defined( __NAMESPACE__ . '\ORDER_ITEM_META_ALLOCATIONS' ) ? ORDER_ITEM_META_ALLOCATIONS : 'lpr_allocations';
+                        $summary         = self::active_allocation_summary( $item );
+                        if ( $summary['total_qty'] <= 0 ) {
+                                return 0;
+                        }
+
+                        $allocs             = $summary['allocs'];
+                        $remaining_to_move  = $move_qty;
+
+                        foreach ( $summary['active_rows'] as $row ) {
+                                if ( $remaining_to_move <= 0 ) {
+                                        break;
+                                }
+                                $idx      = $row['index'];
+                                $row_qty  = isset( $allocs[ $idx ]['qty_allocated'] ) ? max( 0, (int) $allocs[ $idx ]['qty_allocated'] ) : 0;
+                                if ( $row_qty <= 0 ) {
+                                        continue;
+                                }
+
+                                if ( $remaining_to_move >= $row_qty ) {
+                                        $allocs[ $idx ]['status'] = 'released';
+                                        $remaining_to_move       -= $row_qty;
+                                } else {
+                                        $allocs[ $idx ]['qty_allocated'] = $row_qty - $remaining_to_move;
+                                        $remaining_to_move               = 0;
+                                }
+                        }
+
+                        $moved_qty = $move_qty - max( 0, $remaining_to_move );
+                        if ( $moved_qty <= 0 ) {
+                                return 0;
+                        }
+
+                        $allocs[] = array(
+                                'po_id'         => $po_id,
+                                'po_number'     => $po_number,
+                                'qty_allocated' => (int) $moved_qty,
+                                'eta'           => $eta_to_store,
+                                'status'        => 'reserved',
+                                'allocated_at'  => current_time( 'mysql' ),
+                        );
+
+                        $item->update_meta_data( $meta_key_allocs, $allocs );
+                        $item->save();
+
+                        lpr_allocator_index_po_allocation( $po_id, (int) $order->get_id(), (int) $item->get_id() );
+
+                        $product   = $item->get_product();
+                        $sku       = $product instanceof \WC_Product ? $product->get_sku() : '';
+                        $line_name = $item->get_name();
+                        $note      = sprintf(
+                                /* translators: 1: qty, 2: item name, 3: SKU, 4: PO number, 5: ETA */
+                                __( 'Reallocated %1$dx %2$s%3$s to PO #%4$s (ETA %5$s) to honor requested delivery.', 'lpr-backorder-allocator' ),
+                                (int) $moved_qty,
+                                $line_name,
+                                $sku ? ' [' . $sku . ']' : '',
+                                $po_number ? $po_number : (string) $po_id,
+                                $eta_to_store ? $eta_to_store : '—'
+                        );
+                        $order->add_order_note( $note, false, true );
+
+                        // Refresh PO line tallies after releasing earlier allocations.
+                        if ( function_exists( __NAMESPACE__ . '\lpr_allocator_reapply_po_allocations_for_order' ) ) {
+                                lpr_allocator_reapply_po_allocations_for_order( (int) $order->get_id() );
+                        }
+
+                        return $moved_qty;
+                }
         }
         PO_FIFO_Allocator::init();
 }
