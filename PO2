@@ -3366,9 +3366,9 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                         $today_dt        = current_time( 'mysql' );
                         $eta_to_store    = $eta_for_line;
 
-			foreach ( $queue as $entry ) {
-				if ( $remaining_for_line <= 0 ) {
-					break;
+                        foreach ( $queue as $entry ) {
+                                if ( $remaining_for_line <= 0 ) {
+                                        break;
 				}
 				$order = wc_get_order( $entry['order_id'] );
 				if ( ! ( $order instanceof \WC_Order ) ) {
@@ -3435,6 +3435,39 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
 
                                 $remaining_for_line -= $allocate_now;
                                 $allocated_total    += $allocate_now;
+                        }
+
+                        // Upgrade existing allocations on later POs when this earlier PO still has free qty.
+                        if ( $remaining_for_line > 0 && '' !== $eta_for_line ) {
+                                $improvement_candidates = self::collect_eta_improvement_candidates( $target_product_or_variation_id, $eta_for_line );
+
+                                foreach ( $improvement_candidates as $candidate ) {
+                                        if ( $remaining_for_line <= 0 ) {
+                                                break;
+                                        }
+
+                                        $order = wc_get_order( $candidate['order_id'] );
+                                        if ( ! ( $order instanceof \WC_Order ) ) {
+                                                continue;
+                                        }
+
+                                        $target_item = $order->get_item( $candidate['item_id'] );
+                                        if ( ! ( $target_item instanceof \WC_Order_Item_Product ) ) {
+                                                continue;
+                                        }
+
+                                        $move_qty = min( (int) $candidate['qty'], $remaining_for_line );
+                                        if ( $move_qty <= 0 ) {
+                                                continue;
+                                        }
+
+                                        $moved = self::reallocate_from_later_po( $order, $target_item, $move_qty, $eta_to_store, $po_id, $po_number );
+                                        if ( $moved > 0 ) {
+                                                $affected_orders[ (int) $order->get_id() ] = true;
+                                                $remaining_for_line -= $moved;
+                                                $allocated_total    += $moved;
+                                        }
+                                }
                         }
 
                         // Consider reallocation for orders with a requested delivery date where this PO still meets the window
@@ -3633,6 +3666,88 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                         }
 
                         return gmdate( 'Y-m-d', $ts );
+                }
+
+                /**
+                 * Collect allocated items that would get an earlier ETA by moving to the current PO.
+                 *
+                 * @param int    $target_id
+                 * @param string $po_eta_for_line
+                 * @return array[]
+                 */
+                protected static function collect_eta_improvement_candidates( int $target_id, string $po_eta_for_line ): array {
+                        if ( '' === $po_eta_for_line ) {
+                                return array();
+                        }
+
+                        $settings = class_exists( __NAMESPACE__ . '\Settings' ) ? Settings::get() : array( 'order_statuses' => array( 'processing', 'on-hold' ) );
+                        $statuses = array();
+                        foreach ( (array) $settings['order_statuses'] as $st ) {
+                                $statuses[] = 'wc-' . preg_replace( '/^wc-/', '', sanitize_key( $st ) );
+                        }
+
+                        $candidates = array();
+                        $page       = 1;
+                        $limit      = 50;
+
+                        do {
+                                $args = array(
+                                        'status'  => $statuses,
+                                        'limit'   => $limit,
+                                        'page'    => $page,
+                                        'orderby' => 'date',
+                                        'order'   => 'ASC',
+                                        'return'  => 'ids',
+                                        'type'    => 'shop_order',
+                                );
+                                $order_ids = function_exists( 'wc_get_orders' ) ? wc_get_orders( $args ) : array();
+                                if ( empty( $order_ids ) ) {
+                                        break;
+                                }
+
+                                foreach ( $order_ids as $oid ) {
+                                        $order = wc_get_order( $oid );
+                                        if ( ! ( $order instanceof \WC_Order ) ) {
+                                                continue;
+                                        }
+
+                                        $ready_by = self::requested_ready_by( $order );
+                                        if ( $ready_by && strcmp( $po_eta_for_line, $ready_by ) > 0 ) {
+                                                continue; // PO would miss readiness window.
+                                        }
+
+                                        foreach ( $order->get_items( 'line_item' ) as $item ) {
+                                                if ( ! ( $item instanceof \WC_Order_Item_Product ) ) {
+                                                        continue;
+                                                }
+                                                $itm_vid = (int) $item->get_variation_id();
+                                                $itm_pid = (int) $item->get_product_id();
+                                                $match   = ( $itm_vid > 0 ) ? ( $itm_vid === $target_id ) : ( $itm_pid === $target_id );
+                                                if ( ! $match ) {
+                                                        continue;
+                                                }
+
+                                                $summary = self::active_allocation_summary( $item );
+                                                if ( $summary['total_qty'] <= 0 || '' === $summary['earliest_eta'] ) {
+                                                        continue;
+                                                }
+
+                                                if ( strcmp( $summary['earliest_eta'], $po_eta_for_line ) <= 0 ) {
+                                                        continue; // Already as good or better.
+                                                }
+
+                                                $candidates[] = array(
+                                                        'order_id' => (int) $oid,
+                                                        'item_id'  => (int) $item->get_id(),
+                                                        'qty'      => (int) $summary['total_qty'],
+                                                );
+                                        }
+                                }
+
+                                $page++;
+                        } while ( count( $order_ids ) === $limit );
+
+                        return $candidates;
                 }
 
                 /**
@@ -3967,6 +4082,89 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                         $order->add_order_note( $note, false, true );
 
                         // Refresh PO line tallies after releasing earlier allocations.
+                        if ( function_exists( __NAMESPACE__ . '\lpr_allocator_reapply_po_allocations_for_order' ) ) {
+                                lpr_allocator_reapply_po_allocations_for_order( (int) $order->get_id() );
+                        }
+
+                        return $moved_qty;
+                }
+
+                /**
+                 * Move an allocated item from a later PO to the current (earlier) PO without hurting other orders.
+                 */
+                protected static function reallocate_from_later_po( \WC_Order $order, \WC_Order_Item_Product $item, int $move_qty, string $eta_to_store, int $po_id, string $po_number ): int {
+                        if ( $move_qty <= 0 ) {
+                                return 0;
+                        }
+
+                        $meta_key_allocs = defined( __NAMESPACE__ . '\ORDER_ITEM_META_ALLOCATIONS' ) ? ORDER_ITEM_META_ALLOCATIONS : 'lpr_allocations';
+                        $summary         = self::active_allocation_summary( $item );
+                        if ( $summary['total_qty'] <= 0 ) {
+                                return 0;
+                        }
+
+                        $allocs            = $summary['allocs'];
+                        $remaining_to_move = $move_qty;
+                        $rows              = array_reverse( $summary['active_rows'] );
+
+                        foreach ( $rows as $row ) {
+                                if ( $remaining_to_move <= 0 ) {
+                                        break;
+                                }
+
+                                $row_eta = isset( $row['eta'] ) ? (string) $row['eta'] : '';
+                                if ( '' !== $row_eta && '' !== $eta_to_store && strcmp( $row_eta, $eta_to_store ) <= 0 ) {
+                                        continue; // Do not pull from allocations that already have an equal or better ETA.
+                                }
+
+                                $idx     = $row['index'];
+                                $row_qty = isset( $allocs[ $idx ]['qty_allocated'] ) ? max( 0, (int) $allocs[ $idx ]['qty_allocated'] ) : 0;
+                                if ( $row_qty <= 0 ) {
+                                        continue;
+                                }
+
+                                if ( $remaining_to_move >= $row_qty ) {
+                                        $allocs[ $idx ]['status'] = 'released';
+                                        $remaining_to_move       -= $row_qty;
+                                } else {
+                                        $allocs[ $idx ]['qty_allocated'] = $row_qty - $remaining_to_move;
+                                        $remaining_to_move               = 0;
+                                }
+                        }
+
+                        $moved_qty = $move_qty - max( 0, $remaining_to_move );
+                        if ( $moved_qty <= 0 ) {
+                                return 0;
+                        }
+
+                        $allocs[] = array(
+                                'po_id'         => $po_id,
+                                'po_number'     => $po_number,
+                                'qty_allocated' => (int) $moved_qty,
+                                'eta'           => $eta_to_store,
+                                'status'        => 'reserved',
+                                'allocated_at'  => current_time( 'mysql' ),
+                        );
+
+                        $item->update_meta_data( $meta_key_allocs, $allocs );
+                        $item->save();
+
+                        lpr_allocator_index_po_allocation( $po_id, (int) $order->get_id(), (int) $item->get_id() );
+
+                        $product   = $item->get_product();
+                        $sku       = $product instanceof \WC_Product ? $product->get_sku() : '';
+                        $line_name = $item->get_name();
+                        $note      = sprintf(
+                                /* translators: 1: qty, 2: item name, 3: SKU, 4: PO number, 5: ETA */
+                                __( 'Reallocated %1$dx %2$s%3$s to earlier PO #%4$s (ETA %5$s) to improve delivery.', 'lpr-backorder-allocator' ),
+                                (int) $moved_qty,
+                                $line_name,
+                                $sku ? ' [' . $sku . ']' : '',
+                                $po_number ? $po_number : (string) $po_id,
+                                $eta_to_store ? $eta_to_store : '—'
+                        );
+                        $order->add_order_note( $note, false, true );
+
                         if ( function_exists( __NAMESPACE__ . '\lpr_allocator_reapply_po_allocations_for_order' ) ) {
                                 lpr_allocator_reapply_po_allocations_for_order( (int) $order->get_id() );
                         }
