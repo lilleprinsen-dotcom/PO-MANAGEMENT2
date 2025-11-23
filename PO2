@@ -2,6 +2,14 @@
 
 namespace LPR\Allocator;
 
+/*
+ * Overview:
+ * - Settings/helpers/constants for allocator options and meta keys.
+ * - ETA tracking, PO allocation queues, and FIFO/VIP allocation engines.
+ * - Admin UI (metaboxes, reports, quick PO drafts) and cron/Action Scheduler jobs.
+ * - Helper utilities for backorder math, PO indexing, and quick-add workflows.
+ */
+
 if ( ! is_admin() && ! wp_doing_cron() ) {
 	return;
 }
@@ -2058,10 +2066,12 @@ if ( ! class_exists( __NAMESPACE__ . '\Order_Allocations_Metabox' ) ) {
                                         $(document).on('click','.lpr-vip-confirm',function(e){
                                                 e.preventDefault();
                                                 var $btn = $(this);
+                                                var $modal = $btn.closest('.lpr-vip-modal');
                                                 var plan = $btn.data('plan');
                                                 var nonce = $btn.data('nonce');
+                                                var overrides = collectVipOverrides($modal);
                                                 $btn.prop('disabled', true);
-                                                $.post(ajaxurl,{action:'lpr_vip_confirm',plan_key:plan,_wpnonce:nonce},function(resp){
+                                                $.post(ajaxurl,{action:'lpr_vip_confirm',plan_key:plan,_wpnonce:nonce,source_overrides:JSON.stringify(overrides)},function(resp){
                                                         if(resp && resp.success){
                                                                 window.location.reload();
                                                                 return;
@@ -2248,6 +2258,21 @@ if ( ! class_exists( __NAMESPACE__ . '\Order_VIP_Prioritizer' ) ) {
                                 wp_send_json_error( array( 'message' => __( 'This VIP preview expired. Please retry.', 'lpr-backorder-allocator' ) ) );
                         }
 
+                        $overrides_raw = isset( $_POST['source_overrides'] ) ? wp_unslash( (string) $_POST['source_overrides'] ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+                        $overrides     = array();
+                        if ( $overrides_raw ) {
+                                $decoded = json_decode( $overrides_raw, true );
+                                if ( is_array( $decoded ) ) {
+                                        foreach ( $decoded as $item_id => $source_id ) {
+                                                $iid = absint( $item_id );
+                                                $sid = absint( $source_id );
+                                                if ( $iid > 0 && $sid > 0 ) {
+                                                        $overrides[ $iid ] = $sid;
+                                                }
+                                        }
+                                }
+                        }
+
                         $order_id = isset( $payload['order_id'] ) ? (int) $payload['order_id'] : 0;
                         if ( $order_id <= 0 || ! wp_verify_nonce( $nonce, 'lpr_vip_' . $order_id ) ) {
                                 delete_transient( $key );
@@ -2255,6 +2280,14 @@ if ( ! class_exists( __NAMESPACE__ . '\Order_VIP_Prioritizer' ) ) {
                         }
 
                         $plan = isset( $payload['plan'] ) ? $payload['plan'] : array();
+                        if ( ! empty( $overrides ) ) {
+                                $rebuilt = self::build_plan( $order_id, $overrides );
+                                if ( empty( $rebuilt['items'] ) ) {
+                                        delete_transient( $key );
+                                        wp_send_json_error( array( 'message' => __( 'Nothing to apply.', 'lpr-backorder-allocator' ) ) );
+                                }
+                                $plan = $rebuilt;
+                        }
                         if ( empty( $plan['items'] ) ) {
                                 delete_transient( $key );
                                 wp_send_json_error( array( 'message' => __( 'Nothing to apply.', 'lpr-backorder-allocator' ) ) );
@@ -3212,20 +3245,46 @@ if ( ! class_exists( __NAMESPACE__ . '\Requested_Delivery_Date_Box' ) ) {
                                 return;
                         }
 
-                        $raw = isset( $_POST['lpr_requested_delivery'] ) ? (string) wp_unslash( $_POST['lpr_requested_delivery'] ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-                        $val = lpr_allocator_sanitize_ymd( $raw );
+                        $raw      = isset( $_POST['lpr_requested_delivery'] ) ? (string) wp_unslash( $_POST['lpr_requested_delivery'] ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+                        $val      = lpr_allocator_sanitize_ymd( $raw );
+                        $meta_key = defined( __NAMESPACE__ . '\ORDER_META_REQUESTED_DELIVERY' ) ? ORDER_META_REQUESTED_DELIVERY : '_lpr_requested_delivery_date';
+                        $prev     = '';
 
                         if ( $order instanceof \WC_Order ) {
-                                $order->update_meta_data( defined( __NAMESPACE__ . '\ORDER_META_REQUESTED_DELIVERY' ) ? ORDER_META_REQUESTED_DELIVERY : '_lpr_requested_delivery_date', $val );
+                                $prev = (string) $order->get_meta( $meta_key, true );
+                                $order->update_meta_data( $meta_key, $val );
+                                self::after_request_change( (int) $order->get_id(), $prev, $val );
                                 return;
                         }
 
+                        $prev = (string) get_post_meta( $order_id, $meta_key, true );
                         if ( '' === $val ) {
-                                delete_post_meta( $order_id, defined( __NAMESPACE__ . '\ORDER_META_REQUESTED_DELIVERY' ) ? ORDER_META_REQUESTED_DELIVERY : '_lpr_requested_delivery_date' );
+                                delete_post_meta( $order_id, $meta_key );
                         } else {
-                                update_post_meta( $order_id, defined( __NAMESPACE__ . '\ORDER_META_REQUESTED_DELIVERY' ) ? ORDER_META_REQUESTED_DELIVERY : '_lpr_requested_delivery_date', $val );
+                                update_post_meta( $order_id, $meta_key, $val );
+                        }
+
+                        self::after_request_change( $order_id, $prev, $val );
+                }
+
+                protected static function after_request_change( int $order_id, string $previous, string $current ): void {
+                        if ( $previous === $current ) {
+                                return;
+                        }
+
+                        if ( class_exists( __NAMESPACE__ . '\ETA' ) ) {
+                                ETA::update_line_eta( $order_id );
+                        }
+
+                        if ( function_exists( __NAMESPACE__ . '\lpr_allocator_reapply_po_allocations_for_order' ) ) {
+                                lpr_allocator_reapply_po_allocations_for_order( $order_id );
+                        }
+
+                        if ( class_exists( __NAMESPACE__ . '\Auto_PO_Allocator' ) ) {
+                                Auto_PO_Allocator::run();
                         }
                 }
+
 
                 protected static function resolve_order_id( $context ): int {
                         $order_id = 0;
@@ -5063,56 +5122,59 @@ if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_get_or_create_quick_po_f
                 $user_id = get_current_user_id();
                 if ( $user_id <= 0 ) {
                         return 0;
-		}
-		$meta_key = 'lpr_quick_po_draft_id';
-		$po_id    = (int) get_user_meta( $user_id, $meta_key, true );
+                }
+                $meta_key = 'lpr_quick_po_draft_id';
+                $po_id    = (int) get_user_meta( $user_id, $meta_key, true );
 
-		$valid = false;
-		if ( $po_id > 0 ) {
-			$post = get_post( $po_id );
-			if ( $post instanceof \WP_Post && $post->post_type === ( defined( __NAMESPACE__ . '\CPT_SUPPLIER_PO' ) ? CPT_SUPPLIER_PO : 'supplier_po' ) && 'trash' !== $post->post_status ) {
-				$valid = true;
-			}
-		}
+                $valid = false;
+                if ( $po_id > 0 ) {
+                        $post           = get_post( $po_id );
+                        $draft_statuses = array( 'draft', 'auto-draft' );
+                        if ( $post instanceof \WP_Post && $post->post_type === ( defined( __NAMESPACE__ . '\CPT_SUPPLIER_PO' ) ? CPT_SUPPLIER_PO : 'supplier_po' ) && in_array( $post->post_status, $draft_statuses, true ) ) {
+                                $valid = true;
+                        } else {
+                                $po_id = 0; // never reuse open/trashed POs for quick add.
+                        }
+                }
 
-		if ( ! $valid ) {
-			$title = sprintf(
-				/* translators: 1: user display name, 2: date time */
-				__( 'Quick PO Draft – %1$s – %2$s', 'lpr-backorder-allocator' ),
-				wp_get_current_user()->display_name ?: 'User',
-				wp_date( 'Y-m-d H:i' )
-			);
-			$po_id = wp_insert_post(
-				array(
-					'post_type'   => defined( __NAMESPACE__ . '\CPT_SUPPLIER_PO' ) ? CPT_SUPPLIER_PO : 'supplier_po',
-					'post_status' => defined( __NAMESPACE__ . '\PO_STATUS_OPEN' ) ? PO_STATUS_OPEN : 'draft',
-					'post_title'  => $title,
-				),
-				true
-			);
-			if ( is_wp_error( $po_id ) ) {
-				return 0;
-			}
-			update_user_meta( $user_id, $meta_key, (int) $po_id );
-		}
+                if ( ! $valid ) {
+                        $title = sprintf(
+                                /* translators: 1: user display name, 2: date time */
+                                __( 'Quick PO Draft – %1$s – %2$s', 'lpr-backorder-allocator' ),
+                                wp_get_current_user()->display_name ?: 'User',
+                                wp_date( 'Y-m-d H:i' )
+                        );
+                        $po_id = wp_insert_post(
+                                array(
+                                        'post_type'   => defined( __NAMESPACE__ . '\CPT_SUPPLIER_PO' ) ? CPT_SUPPLIER_PO : 'supplier_po',
+                                        'post_status' => 'draft',
+                                        'post_title'  => $title,
+                                ),
+                                true
+                        );
+                        if ( is_wp_error( $po_id ) ) {
+                                return 0;
+                        }
+                        update_user_meta( $user_id, $meta_key, (int) $po_id );
+                }
 
-		// Seed header fields if provided (non-empty).
-		if ( $po_id > 0 ) {
-			if ( '' !== $supplier ) {
-				update_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_SUPPLIER_NAME' ) ? PO_META_SUPPLIER_NAME : '_lpr_supplier_name', sanitize_text_field( $supplier ) );
-			}
-			if ( '' !== $po_number ) {
-				update_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_PO_NUMBER' ) ? PO_META_PO_NUMBER : '_lpr_po_number', sanitize_text_field( $po_number ) );
-			}
-			if ( '' !== $eta_ymd ) {
-				update_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_ETA_DATE' ) ? PO_META_ETA_DATE : '_lpr_eta_date', lpr_allocator_sanitize_ymd( $eta_ymd ) );
-			}
-			// Ensure lines array exists.
-			$lines = get_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_LINES' ) ? PO_META_LINES : '_lpr_po_lines', true );
-			if ( ! is_array( $lines ) ) {
-				update_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_LINES' ) ? PO_META_LINES : '_lpr_po_lines', array() );
-			}
-		}
+                // Seed header fields if provided (non-empty).
+                if ( $po_id > 0 ) {
+                        if ( '' !== $supplier ) {
+                                update_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_SUPPLIER_NAME' ) ? PO_META_SUPPLIER_NAME : '_lpr_supplier_name', sanitize_text_field( $supplier ) );
+                        }
+                        if ( '' !== $po_number ) {
+                                update_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_PO_NUMBER' ) ? PO_META_PO_NUMBER : '_lpr_po_number', sanitize_text_field( $po_number ) );
+                        }
+                        if ( '' !== $eta_ymd ) {
+                                update_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_ETA_DATE' ) ? PO_META_ETA_DATE : '_lpr_eta_date', lpr_allocator_sanitize_ymd( $eta_ymd ) );
+                        }
+                        // Ensure lines array exists.
+                        $lines = get_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_LINES' ) ? PO_META_LINES : '_lpr_po_lines', true );
+                        if ( ! is_array( $lines ) ) {
+                                update_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_LINES' ) ? PO_META_LINES : '_lpr_po_lines', array() );
+                        }
+                }
 
                 return (int) $po_id;
         }
