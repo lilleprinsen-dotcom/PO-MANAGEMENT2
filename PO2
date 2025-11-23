@@ -1352,10 +1352,15 @@ public static function update_line_eta( int $order_id ): void {
 		return;
 	}
 
-	$order = wc_get_order( $order_id );
-	if ( ! $order instanceof \WC_Order ) {
-		return;
-	}
+        $order = wc_get_order( $order_id );
+        if ( ! $order instanceof \WC_Order ) {
+                return;
+        }
+
+        // Do not mutate completed orders (already shipped).
+        if ( $order->has_status( 'completed' ) ) {
+                return;
+        }
 
 	self::$updating = true;
 
@@ -1627,7 +1632,12 @@ if ( ! class_exists( __NAMESPACE__ . '\Order_Allocations_Metabox' ) ) {
 					continue;
 				}
 
-				$product   = $item->get_product();
+                                // Ensure we have the latest meta (may have changed earlier in the request).
+                                if ( method_exists( $item, 'read_meta_data' ) ) {
+                                        $item->read_meta_data( true );
+                                }
+
+                                $product   = $item->get_product();
 				$name      = $item->get_name();
 				$qty       = (int) $item->get_quantity();
 				$sku       = $product instanceof \WC_Product ? $product->get_sku() : '';
