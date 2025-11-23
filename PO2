@@ -55,6 +55,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Settings' ) ) {
                                 'inform_customer_eta'   => false,
                                 'frontend_extra_pool'   => false,
                                 'frontend_refresh_interval' => 900,
+                                'auto_allocation_interval' => 0,
                                 'brand_logo_url'        => '',
                                 'brand_primary_color'   => '#1a1a1a',
                                 'brand_support_email'   => '',
@@ -119,13 +120,19 @@ if ( ! class_exists( __NAMESPACE__ . '\Settings' ) ) {
 				$statuses = $defaults['order_statuses'];
 			}
 
-			$inform = ! empty( $raw['inform_customer_eta'] );
+                        $inform = ! empty( $raw['inform_customer_eta'] );
                         $front  = ! empty( $raw['frontend_extra_pool'] );
 
                         $allowed_intervals = array( 300, 900, 1800, 3600, 7200 );
                         $interval         = isset( $raw['frontend_refresh_interval'] ) ? (int) $raw['frontend_refresh_interval'] : $defaults['frontend_refresh_interval'];
                         if ( ! in_array( $interval, $allowed_intervals, true ) ) {
                                 $interval = $defaults['frontend_refresh_interval'];
+                        }
+
+                        $allowed_alloc_intervals = array( 0, 900, 1800, 3600, 7200, 14400 );
+                        $alloc_interval          = isset( $raw['auto_allocation_interval'] ) ? (int) $raw['auto_allocation_interval'] : $defaults['auto_allocation_interval'];
+                        if ( ! in_array( $alloc_interval, $allowed_alloc_intervals, true ) ) {
+                                $alloc_interval = $defaults['auto_allocation_interval'];
                         }
 
                         $logo   = isset( $raw['brand_logo_url'] ) ? esc_url_raw( $raw['brand_logo_url'] ) : '';
@@ -143,6 +150,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Settings' ) ) {
                                 'inform_customer_eta'   => (bool) $inform,
                                 'frontend_extra_pool'   => (bool) $front,
                                 'frontend_refresh_interval' => (int) $interval,
+                                'auto_allocation_interval' => (int) $alloc_interval,
                                 'brand_logo_url'        => $logo,
                                 'brand_primary_color'   => $color,
                                 'brand_support_email'   => $email,
@@ -264,10 +272,26 @@ if ( ! class_exists( __NAMESPACE__ . '\Admin_Settings_Tab' ) ) {
                                         'default' => 900,
                                 ),
 
-				array(
-					'type'  => 'sectionend',
-					'id'    => 'lpr_allocator_section_main',
-				),
+                                array(
+                                        'title'   => __( 'Automatic PO allocation', 'lpr-backorder-allocator' ),
+                                        'desc'    => __( 'Run the PO allocator on all open POs at this cadence. Uses the same logic as the Allocate button.', 'lpr-backorder-allocator' ),
+                                        'id'      => 'lpr_allocator_auto_allocation_interval',
+                                        'type'    => 'select',
+                                        'options' => array(
+                                                0     => __( 'Disabled', 'lpr-backorder-allocator' ),
+                                                900   => __( 'Every 15 minutes', 'lpr-backorder-allocator' ),
+                                                1800  => __( 'Every 30 minutes', 'lpr-backorder-allocator' ),
+                                                3600  => __( 'Every hour', 'lpr-backorder-allocator' ),
+                                                7200  => __( 'Every 2 hours', 'lpr-backorder-allocator' ),
+                                                14400 => __( 'Every 4 hours', 'lpr-backorder-allocator' ),
+                                        ),
+                                        'default' => 0,
+                                ),
+
+                                array(
+                                        'type'  => 'sectionend',
+                                        'id'    => 'lpr_allocator_section_main',
+                                ),
 
 				array(
 					'title' => __( 'Branding', 'lpr-backorder-allocator' ),
@@ -337,6 +361,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Admin_Settings_Tab' ) ) {
                                         'lpr_allocator_inform_customer_eta'  => $settings['inform_customer_eta'] ? 'yes' : 'no',
                                         'lpr_allocator_frontend_extra_pool'  => $settings['frontend_extra_pool'] ? 'yes' : 'no',
                                         'lpr_allocator_frontend_refresh_interval' => (int) $settings['frontend_refresh_interval'],
+                                        'lpr_allocator_auto_allocation_interval' => (int) $settings['auto_allocation_interval'],
                                         'lpr_allocator_brand_logo_url'       => (string) $settings['brand_logo_url'],
                                         'lpr_allocator_brand_primary_color'  => (string) $settings['brand_primary_color'],
                                         'lpr_allocator_brand_support_email'  => (string) $settings['brand_support_email'],
@@ -389,6 +414,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Admin_Settings_Tab' ) ) {
                                         'inform_customer_eta'   => ! empty( $_POST['lpr_allocator_inform_customer_eta'] ),
                                         'frontend_extra_pool'   => ! empty( $_POST['lpr_allocator_frontend_extra_pool'] ),
                                         'frontend_refresh_interval' => isset( $_POST['lpr_allocator_frontend_refresh_interval'] ) ? (int) $_POST['lpr_allocator_frontend_refresh_interval'] : 900,
+                                        'auto_allocation_interval' => isset( $_POST['lpr_allocator_auto_allocation_interval'] ) ? (int) $_POST['lpr_allocator_auto_allocation_interval'] : 0,
                                         'brand_logo_url'        => isset( $_POST['lpr_allocator_brand_logo_url'] ) ? (string) wp_unslash( $_POST['lpr_allocator_brand_logo_url'] ) : '',
                                         'brand_primary_color'   => isset( $_POST['lpr_allocator_brand_primary_color'] ) ? (string) wp_unslash( $_POST['lpr_allocator_brand_primary_color'] ) : '',
                                         'brand_support_email'   => isset( $_POST['lpr_allocator_brand_support_email'] ) ? (string) wp_unslash( $_POST['lpr_allocator_brand_support_email'] ) : '',
@@ -400,6 +426,10 @@ if ( ! class_exists( __NAMESPACE__ . '\Admin_Settings_Tab' ) ) {
 
                         if ( class_exists( __NAMESPACE__ . '\Incoming_Stock_Indexer' ) ) {
                                 Incoming_Stock_Indexer::reset_schedule();
+                        }
+
+                        if ( class_exists( __NAMESPACE__ . '\Auto_PO_Allocator' ) ) {
+                                Auto_PO_Allocator::reset_schedule();
                         }
 
                         if ( class_exists( '\WC_Admin_Settings' ) ) {
@@ -2439,15 +2469,127 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
 
 			return $queue;
 		}
-	}
-	PO_FIFO_Allocator::init();
+        }
+        PO_FIFO_Allocator::init();
+}
+
+if ( ! class_exists( __NAMESPACE__ . '\Auto_PO_Allocator' ) ) {
+        /**
+         * Recurring job to allocate all open Supplier POs using the FIFO allocator.
+         */
+        class Auto_PO_Allocator {
+
+                const ACTION_HOOK = 'lpr_allocator_auto_allocate_open_pos';
+
+                public static function init(): void {
+                        add_action( 'init', array( __CLASS__, 'maybe_schedule' ) );
+                        add_action( self::ACTION_HOOK, array( __CLASS__, 'run' ) );
+                }
+
+                public static function reset_schedule(): void {
+                        if ( function_exists( 'as_unschedule_all_actions' ) ) {
+                                as_unschedule_all_actions( self::ACTION_HOOK, array(), 'lpr-allocator' );
+                        } else {
+                                wp_clear_scheduled_hook( self::ACTION_HOOK );
+                        }
+                        self::maybe_schedule( true );
+                }
+
+                protected static function get_interval(): int {
+                        $settings = class_exists( __NAMESPACE__ . '\Settings' ) ? Settings::get() : array();
+                        $interval = isset( $settings['auto_allocation_interval'] ) ? (int) $settings['auto_allocation_interval'] : 0;
+                        $interval = max( 0, $interval );
+                        return $interval;
+                }
+
+                public static function maybe_schedule( bool $force = false ): void {
+                        $interval = self::get_interval();
+
+                        if ( $interval <= 0 ) {
+                                if ( $force && function_exists( 'as_unschedule_all_actions' ) ) {
+                                        as_unschedule_all_actions( self::ACTION_HOOK, array(), 'lpr-allocator' );
+                                } elseif ( $force ) {
+                                        wp_clear_scheduled_hook( self::ACTION_HOOK );
+                                }
+                                return;
+                        }
+
+                        if ( function_exists( 'as_schedule_recurring_action' ) && function_exists( 'as_next_scheduled_action' ) ) {
+                                if ( $force && function_exists( 'as_unschedule_all_actions' ) ) {
+                                        as_unschedule_all_actions( self::ACTION_HOOK, array(), 'lpr-allocator' );
+                                }
+                                $next = as_next_scheduled_action( self::ACTION_HOOK, array(), 'lpr-allocator' );
+                                if ( ! $next ) {
+                                        as_schedule_recurring_action( time() + 60, $interval, self::ACTION_HOOK, array(), 'lpr-allocator', true );
+                                }
+                        } else {
+                                if ( $force ) {
+                                        wp_clear_scheduled_hook( self::ACTION_HOOK );
+                                }
+                                if ( ! wp_next_scheduled( self::ACTION_HOOK ) ) {
+                                        wp_schedule_single_event( time() + $interval, self::ACTION_HOOK );
+                                }
+                        }
+                }
+
+                public static function run(): void {
+                        self::allocate_all();
+
+                        $interval = self::get_interval();
+                        if ( $interval <= 0 ) {
+                                return;
+                        }
+
+                        if ( ! function_exists( 'as_schedule_recurring_action' ) && ! wp_next_scheduled( self::ACTION_HOOK ) ) {
+                                wp_schedule_single_event( time() + $interval, self::ACTION_HOOK );
+                        }
+                }
+
+                protected static function allocate_all(): void {
+                        if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
+                                return;
+                        }
+
+                        $statuses = array( defined( __NAMESPACE__ . '\PO_STATUS_OPEN' ) ? PO_STATUS_OPEN : 'open' );
+                        if ( defined( __NAMESPACE__ . '\PO_STATUS_PARTIAL' ) ) {
+                                $statuses[] = PO_STATUS_PARTIAL;
+                        }
+
+                        $page     = 1;
+                        $per_page = 20;
+
+                        do {
+                                $query = new \WP_Query(
+                                        array(
+                                                'post_type'      => defined( __NAMESPACE__ . '\CPT_SUPPLIER_PO' ) ? CPT_SUPPLIER_PO : 'supplier_po',
+                                                'post_status'    => $statuses,
+                                                'posts_per_page' => $per_page,
+                                                'paged'          => $page,
+                                                'fields'         => 'ids',
+                                                'no_found_rows'  => true,
+                                        )
+                                );
+
+                                if ( empty( $query->posts ) ) {
+                                        break;
+                                }
+
+                                foreach ( $query->posts as $po_id ) {
+                                        PO_FIFO_Allocator::allocate_po( (int) $po_id );
+                                }
+
+                                $page++;
+                        } while ( count( $query->posts ) === $per_page );
+                }
+        }
+        Auto_PO_Allocator::init();
 }
 
 if ( ! class_exists( __NAMESPACE__ . '\PO_Allocate_Button_UI' ) ) {
-	/**
-	 * Adds an "Allocate" button to the Supplier PO edit screen (Publish box) and admin notices.
-	 */
-	class PO_Allocate_Button_UI {
+        /**
+         * Adds an "Allocate" button to the Supplier PO edit screen (Publish box) and admin notices.
+         */
+        class PO_Allocate_Button_UI {
 
 		public static function init(): void {
 			add_action( 'post_submitbox_misc_actions', array( __CLASS__, 'render_button' ) );
