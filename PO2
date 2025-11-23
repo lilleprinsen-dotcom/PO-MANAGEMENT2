@@ -4094,11 +4094,8 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                                         $created_ts = $created ? (int) $created->getTimestamp() : 0;
                                         $ready_by    = self::requested_ready_by( $order );
                                         $backorder_lines = function_exists( __NAMESPACE__ . '\lpr_allocator_count_backorder_lines' ) ? lpr_allocator_count_backorder_lines( $order ) : 0;
-                                        if ( $backorder_lines > 1 ) {
-                                                continue; // Multi-product backorders should keep the earlier allocation.
-                                        }
-                                        if ( $backorder_lines > 1 ) {
-                                                continue; // Multi-product backorders should keep the earlier allocation.
+                                        if ( $backorder_lines <= 0 ) {
+                                                continue; // No backorders left on this order.
                                         }
 
                                         foreach ( $order->get_items( 'line_item' ) as $item ) {
