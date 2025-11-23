@@ -2089,6 +2089,10 @@ if ( ! class_exists( __NAMESPACE__ . '\Order_VIP_Prioritizer' ) ) {
 
                                 // Reassign displaced orders to later POs/backorder using remaining free stock.
                                 $reassignments = self::reassign_displaced( $displaced, $normalized );
+                                if ( empty( $reassignments ) && ! empty( $displaced ) ) {
+                                        // Safety fallback: keep the raw displacement details if reassignment failed.
+                                        $reassignments = $displaced;
+                                }
 
                                 $items_plan[] = array(
                                         'item_id'        => (int) $item->get_id(),
@@ -2399,8 +2403,19 @@ if ( ! class_exists( __NAMESPACE__ . '\Order_VIP_Prioritizer' ) ) {
                                                         foreach ( $item['vip_allocs'] as $a ) {
                                                                 $vip_qty += (int) ( $a['qty'] ?? 0 );
                                                         }
-                                                        $rows = ! empty( $item['displacements'] ) ? $item['displacements'] : array( array() );
-                                                        foreach ( $rows as $row ) :
+                                                        $rows = ! empty( $item['displacements'] ) && is_array( $item['displacements'] ) ? $item['displacements'] : array();
+                                                        if ( empty( $rows ) ) :
+                                                                ?>
+                                                                <tr>
+                                                                        <td><?php echo esc_html( $item['name'] ); ?></td>
+                                                                        <td><?php echo esc_html( $item['current_eta'] ?: '—' ); ?></td>
+                                                                        <td><?php echo esc_html( $item['new_eta'] ?: '—' ); ?></td>
+                                                                        <td><?php echo esc_html( (string) $vip_qty ); ?></td>
+                                                                        <td colspan="4"><?php echo esc_html__( 'No other orders will lose allocation for this move.', 'lpr-backorder-allocator' ); ?></td>
+                                                                </tr>
+                                                                <?php
+                                                        else :
+                                                                foreach ( $rows as $row ) :
                                                                 $loss_eta = isset( $row['current_eta'] ) ? (string) $row['current_eta'] : '';
                                                                 $new_eta  = isset( $row['new_eta'] ) ? (string) $row['new_eta'] : '';
                                                                 ?>
@@ -2414,7 +2429,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Order_VIP_Prioritizer' ) ) {
                                                                         <td><?php echo esc_html( $new_eta ?: __( 'backorder', 'lpr-backorder-allocator' ) ); ?></td>
                                                                         <td><?php echo esc_html( isset( $row['qty_taken'] ) ? (string) $row['qty_taken'] : '0' ); ?></td>
                                                                 </tr>
-                                                        <?php endforeach; ?>
+                                                        <?php endforeach; endif; ?>
                                                 <?php endforeach; ?>
                                                 </tbody>
                                         </table>
