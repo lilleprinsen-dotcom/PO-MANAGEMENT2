@@ -3887,10 +3887,6 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                         // Build FIFO queue of candidate line items needing allocation.
                         $queue = self::build_fifo_queue( $target_product_or_variation_id, $remaining_for_line, $eta_for_line );
 
-                        if ( empty( $queue ) ) {
-                                return 0;
-                        }
-
                         $allocated_total = 0;
                         $meta_key_allocs = defined( __NAMESPACE__ . '\ORDER_ITEM_META_ALLOCATIONS' ) ? ORDER_ITEM_META_ALLOCATIONS : 'lpr_allocations';
                         $today_dt        = current_time( 'mysql' );
