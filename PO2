@@ -847,13 +847,15 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_CPT' ) ) {
 			add_action( 'init', array( __CLASS__, 'register_cpt' ) );
 
 			add_action( 'add_meta_boxes', array( __CLASS__, 'add_meta_boxes' ) );
-			add_action( 'save_post', array( __CLASS__, 'save_post' ), 10, 2 );
+                        add_action( 'save_post', array( __CLASS__, 'save_post' ), 10, 2 );
 
-			add_filter( 'manage_edit-' . CPT_SUPPLIER_PO . '_columns', array( __CLASS__, 'columns' ) );
-			add_action( 'manage_' . CPT_SUPPLIER_PO . '_posts_custom_column', array( __CLASS__, 'column_content' ), 10, 2 );
+                        add_filter( 'manage_edit-' . CPT_SUPPLIER_PO . '_columns', array( __CLASS__, 'columns' ) );
+                        add_action( 'manage_' . CPT_SUPPLIER_PO . '_posts_custom_column', array( __CLASS__, 'column_content' ), 10, 2 );
 
-			add_filter( 'display_post_states', array( __CLASS__, 'display_states' ), 10, 2 );
-		}
+                        add_filter( 'display_post_states', array( __CLASS__, 'display_states' ), 10, 2 );
+
+                        add_filter( 'request', array( __CLASS__, 'adjust_admin_request_statuses' ) );
+                }
 
 		public static function register_statuses(): void {
 			$statuses = array(
@@ -1219,11 +1221,11 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_CPT' ) ) {
 			return $new;
 		}
 
-		public static function column_content( string $column, int $post_id ): void {
-			switch ( $column ) {
-				case 'po_number':
-					$po = (string) get_post_meta( $post_id, PO_META_PO_NUMBER, true );
-					echo esc_html( $po );
+                public static function column_content( string $column, int $post_id ): void {
+                        switch ( $column ) {
+                                case 'po_number':
+                                        $po = (string) get_post_meta( $post_id, PO_META_PO_NUMBER, true );
+                                        echo esc_html( $po );
 					break;
 				case 'supplier':
 					$supplier = (string) get_post_meta( $post_id, PO_META_SUPPLIER_NAME, true );
@@ -1255,14 +1257,31 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_CPT' ) ) {
 					$obj = get_post_status_object( $st );
 					echo esc_html( $obj && isset( $obj->label ) ? $obj->label : $st );
 					break;
-			}
-		}
+                        }
+                }
 
-		public static function display_states( array $states, \WP_Post $post ): array {
-			if ( CPT_SUPPLIER_PO !== $post->post_type ) {
-				return $states;
-			}
-			$map = array(
+                /**
+                 * Ensure the list table "All" view includes custom PO statuses.
+                 */
+                public static function adjust_admin_request_statuses( array $vars ): array {
+                        if ( ! is_admin() || ( $vars['post_type'] ?? '' ) !== CPT_SUPPLIER_PO ) {
+                                return $vars;
+                        }
+
+                        $requested_status = isset( $vars['post_status'] ) ? (string) $vars['post_status'] : '';
+                        if ( '' !== $requested_status && 'all' !== $requested_status ) {
+                                return $vars;
+                        }
+
+                        $vars['post_status'] = array( PO_STATUS_OPEN, PO_STATUS_PARTIAL, PO_STATUS_CLOSED, 'publish', 'draft', 'pending', 'private' );
+                        return $vars;
+                }
+
+                public static function display_states( array $states, \WP_Post $post ): array {
+                        if ( CPT_SUPPLIER_PO !== $post->post_type ) {
+                                return $states;
+                        }
+                        $map = array(
 				PO_STATUS_OPEN    => __( 'Open', 'lpr-backorder-allocator' ),
 				PO_STATUS_PARTIAL => __( 'Partial', 'lpr-backorder-allocator' ),
 				PO_STATUS_CLOSED  => __( 'Closed', 'lpr-backorder-allocator' ),
@@ -3519,16 +3538,21 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
 						$itm_vid = (int) $item->get_variation_id();
 						$itm_pid = (int) $item->get_product_id();
 						$match   = ( $itm_vid > 0 ) ? ( $itm_vid === $target_id ) : ( $itm_pid === $target_id );
-						if ( ! $match ) {
-							continue;
-						}
-						if ( class_exists( __NAMESPACE__ . '\Backorder' ) && ! Backorder::needs_allocation( $item ) ) {
-							continue;
-						}
-						$need = lpr_allocator_calc_backorder_need( $item );
-						if ( $need <= 0 ) {
-							continue;
-						}
+                                                if ( ! $match ) {
+                                                        continue;
+                                                }
+                                                if ( class_exists( __NAMESPACE__ . '\Backorder' ) && ! Backorder::needs_allocation( $item ) ) {
+                                                        continue;
+                                                }
+                                                $need = lpr_allocator_calc_backorder_need( $item );
+                                                if ( $need <= 0 ) {
+                                                        continue;
+                                                }
+
+                                                $defer_to_later_supply = $ready_by && $po_eta_for_line && strcmp( $po_eta_for_line, $ready_by ) < 0 && self::has_later_supply_within_window( $target_id, $po_eta_for_line, $ready_by );
+                                                if ( $defer_to_later_supply ) {
+                                                        continue;
+                                                }
 
                                                 if ( $ready_by && $po_eta_for_line && strcmp( $po_eta_for_line, $ready_by ) > 0 ) {
                                                         // PO would arrive after the requested readiness window.
@@ -3609,6 +3633,33 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                         }
 
                         return gmdate( 'Y-m-d', $ts );
+                }
+
+                /**
+                 * Whether a later open PO can satisfy the requested date while this PO is earlier than needed.
+                 */
+                protected static function has_later_supply_within_window( int $target_id, string $po_eta_for_line, string $ready_by ): bool {
+                        if ( '' === $po_eta_for_line || '' === $ready_by || ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Indexer' ) ) {
+                                return false;
+                        }
+
+                        $entries = Incoming_Stock_Indexer::get_product_details( $target_id );
+                        if ( empty( $entries ) ) {
+                                return false;
+                        }
+
+                        foreach ( $entries as $entry ) {
+                                $eta = lpr_allocator_sanitize_ymd( (string) ( $entry['eta'] ?? '' ) );
+                                if ( '' === $eta ) {
+                                        continue;
+                                }
+
+                                if ( strcmp( $eta, $po_eta_for_line ) > 0 && strcmp( $eta, $ready_by ) <= 0 && (int) ( $entry['qty_free'] ?? 0 ) > 0 ) {
+                                        return true;
+                                }
+                        }
+
+                        return false;
                 }
 
                 /**
@@ -4020,6 +4071,14 @@ if ( ! class_exists( __NAMESPACE__ . '\Auto_PO_Allocator' ) ) {
                                                 'paged'          => $page,
                                                 'fields'         => 'ids',
                                                 'no_found_rows'  => true,
+                                                'meta_key'       => defined( __NAMESPACE__ . '\PO_META_ETA_DATE' ) ? PO_META_ETA_DATE : '_lpr_eta_date',
+                                                'meta_type'      => 'DATE',
+                                                'orderby'        => array(
+                                                        'meta_value' => 'ASC',
+                                                        'date'       => 'ASC',
+                                                        'ID'         => 'ASC',
+                                                ),
+                                                'order'          => 'ASC',
                                         )
                                 );
 
@@ -4526,7 +4585,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Indexer' ) ) {
                                         $qty_received  = isset( $line['qty_received'] ) ? max( 0, (int) $line['qty_received'] ) : 0;
                                         $free          = max( 0, $qty_ordered - $qty_allocated - $qty_received );
 
-                                        if ( $free <= 0 ) {
+                                        if ( $qty_ordered <= 0 ) {
                                                 continue;
                                         }
 
