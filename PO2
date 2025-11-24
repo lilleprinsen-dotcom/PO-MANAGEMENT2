@@ -5764,9 +5764,16 @@ if ( ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Indexer' ) ) {
                                         }
                                 );
 
-                                $first = $entries[0];
-                                update_post_meta( $product_id, defined( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_QTY' ) ? PRODUCT_META_NEXT_EXTRA_QTY : '_lpr_next_extra_qty', (int) ( $first['qty_free'] ?? 0 ) );
-                                update_post_meta( $product_id, defined( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_ETA' ) ? PRODUCT_META_NEXT_EXTRA_ETA : '_lpr_next_extra_eta', (string) ( $first['eta'] ?? '' ) );
+                                $next_with_free = $entries[0];
+                                foreach ( $entries as $entry ) {
+                                        if ( ( $entry['qty_free'] ?? 0 ) > 0 ) {
+                                                $next_with_free = $entry;
+                                                break;
+                                        }
+                                }
+
+                                update_post_meta( $product_id, defined( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_QTY' ) ? PRODUCT_META_NEXT_EXTRA_QTY : '_lpr_next_extra_qty', (int) ( $next_with_free['qty_free'] ?? 0 ) );
+                                update_post_meta( $product_id, defined( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_ETA' ) ? PRODUCT_META_NEXT_EXTRA_ETA : '_lpr_next_extra_eta', (string) ( $next_with_free['eta'] ?? '' ) );
                                 update_post_meta( $product_id, defined( __NAMESPACE__ . '\PRODUCT_META_INCOMING_DETAILS' ) ? PRODUCT_META_INCOMING_DETAILS : '_lpr_incoming_po_details', $entries );
 
                                 $new_ids[] = (int) $product_id;
