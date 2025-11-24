@@ -316,7 +316,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Admin_Settings_Tab' ) ) {
                                                         /* translators: 1: quantity, 2: ETA date */
                                                         _n( '%1$d unit expected (ETA %2$s)', '%1$d units expected (ETA %2$s)', 1, 'lpr-backorder-allocator' ),
                                                         1,
-                                                        lpr_allocator_format_store_date( '2025-12-07' )
+                                                        lpr_allocator_format_store_date( '07-12-2025' )
                                                 )
                                         ),
                                         'id'    => 'lpr_allocator_section_frontend',
@@ -595,13 +595,13 @@ if ( ! class_exists( __NAMESPACE__ . '\Email_Notification_Preview' ) ) {
                         $sample_rows = array(
                                 array(
                                         'name' => __( 'Sample product A', 'lpr-backorder-allocator' ),
-                                        'prev' => lpr_allocator_format_store_date( gmdate( 'Y-m-d', strtotime( '+7 days' ) ) ),
-                                        'new'  => lpr_allocator_format_store_date( gmdate( 'Y-m-d', strtotime( '+4 days' ) ) ),
+                                        'prev' => lpr_allocator_format_store_date( gmdate( 'd-m-Y', strtotime( '+7 days' ) ) ),
+                                        'new'  => lpr_allocator_format_store_date( gmdate( 'd-m-Y', strtotime( '+4 days' ) ) ),
                                 ),
                                 array(
                                         'name' => __( 'Sample product B', 'lpr-backorder-allocator' ),
-                                        'prev' => lpr_allocator_format_store_date( gmdate( 'Y-m-d', strtotime( '+15 days' ) ) ),
-                                        'new'  => lpr_allocator_format_store_date( gmdate( 'Y-m-d', strtotime( '+11 days' ) ) ),
+                                        'prev' => lpr_allocator_format_store_date( gmdate( 'd-m-Y', strtotime( '+15 days' ) ) ),
+                                        'new'  => lpr_allocator_format_store_date( gmdate( 'd-m-Y', strtotime( '+11 days' ) ) ),
                                 ),
                         );
 
@@ -896,7 +896,7 @@ if ( ! defined( __NAMESPACE__ . '\PO_META_PO_NUMBER' ) ) {
 	define( __NAMESPACE__ . '\PO_META_PO_NUMBER', '_lpr_po_number' );
 }
 if ( ! defined( __NAMESPACE__ . '\PO_META_ETA_DATE' ) ) {
-        define( __NAMESPACE__ . '\PO_META_ETA_DATE', '_lpr_eta_date' ); // Y-m-d
+        define( __NAMESPACE__ . '\PO_META_ETA_DATE', '_lpr_eta_date' ); // d-m-Y
 }
 if ( ! defined( __NAMESPACE__ . '\PO_META_LINES' ) ) {
         define( __NAMESPACE__ . '\PO_META_LINES', '_lpr_po_lines' );
@@ -917,7 +917,7 @@ if ( ! defined( __NAMESPACE__ . '\PO_STATUS_CLOSED' ) ) {
 
 if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_sanitize_ymd' ) ) {
         /**
-         * Sanitize a date string to Y-m-d or empty.
+         * Sanitize a date string to d-m-Y (or convert a legacy Y-m-d) or empty.
          *
          * @param string $val
          * @return string
@@ -925,20 +925,24 @@ if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_sanitize_ymd' ) ) {
         function lpr_allocator_sanitize_ymd( $val ): string {
                 $val = trim( (string) $val );
                 if ( '' === $val ) {
-			return '';
-		}
-		// Accepts Y-m-d only.
-		$d = \DateTime::createFromFormat( 'Y-m-d', $val );
-		if ( $d && $d->format( 'Y-m-d' ) === $val ) {
-			return $val;
+                        return '';
                 }
+
+                $formats = array( 'd-m-Y', 'Y-m-d' );
+                foreach ( $formats as $format ) {
+                        $d = \DateTime::createFromFormat( $format, $val );
+                        if ( $d && $d->format( $format ) === $val ) {
+                                return $d->format( 'd-m-Y' );
+                        }
+                }
+
                 return '';
         }
 }
 
 if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_format_store_date' ) ) {
         /**
-         * Format a stored Y-m-d (or Y-m-d H:i:s) value using the store date/time format.
+         * Format a stored d-m-Y (or d-m-Y H:i:s) value using the store date/time format.
          * Falls back to the raw input when parsing fails.
          */
         function lpr_allocator_format_store_date( string $ymd, bool $include_time = false ): string {
@@ -947,24 +951,44 @@ if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_format_store_date' ) ) {
                         return '';
                 }
 
-                if ( function_exists( 'wc_string_to_datetime' ) && function_exists( 'wc_format_datetime' ) ) {
-                        $dt = wc_string_to_datetime( $ymd );
-                        if ( $dt instanceof \WC_DateTime ) {
+                $formats = array( 'd-m-Y H:i:s', 'd-m-Y', 'Y-m-d H:i:s', 'Y-m-d' );
+                $dt      = null;
+
+                foreach ( $formats as $format ) {
+                        $candidate = \DateTime::createFromFormat( $format, $ymd );
+                        if ( $candidate && $candidate->format( $format ) === $ymd ) {
+                                $dt = $candidate;
+                                break;
+                        }
+                }
+
+                if ( ! $dt ) {
+                        $ts = strtotime( $ymd );
+                        if ( $ts ) {
+                                $dt = new \DateTime();
+                                $dt->setTimestamp( $ts );
+                        }
+                }
+
+                if ( $dt ) {
+                        if ( function_exists( 'wc_format_datetime' ) ) {
                                 $format = wc_date_format();
                                 if ( $include_time ) {
                                         $format .= ' ' . wc_time_format();
                                 }
-                                return wc_format_datetime( $dt, $format );
-                        }
-                }
 
-                $format = get_option( 'date_format', 'Y-m-d' );
-                $ts     = strtotime( $ymd );
-                if ( $ts ) {
+                                if ( class_exists( '\WC_DateTime' ) ) {
+                                        $wc_dt = new \WC_DateTime();
+                                        $wc_dt->setTimestamp( $dt->getTimestamp() );
+                                        return wc_format_datetime( $wc_dt, $format );
+                                }
+                        }
+
+                        $format = get_option( 'date_format', 'd-m-Y' );
                         if ( $include_time ) {
                                 $format .= ' ' . get_option( 'time_format', 'H:i' );
                         }
-                        return wp_date( $format, $ts );
+                        return wp_date( $format, $dt->getTimestamp() );
                 }
 
                 return $ymd;
@@ -1464,10 +1488,10 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_CPT' ) ) {
 					<label for="lpr_po_number"><strong><?php echo esc_html__( 'PO Number', 'lpr-backorder-allocator' ); ?></strong></label>
 					<input type="text" id="lpr_po_number" name="lpr_po_number" value="<?php echo esc_attr( (string) $po_number ); ?>" />
 				</div>
-				<div class="field">
-					<label for="lpr_eta_date"><strong><?php echo esc_html__( 'Default ETA (Y-m-d)', 'lpr-backorder-allocator' ); ?></strong></label>
-					<input type="date" id="lpr_eta_date" name="lpr_eta_date" value="<?php echo esc_attr( (string) $eta ); ?>" pattern="\d{4}-\d{2}-\d{2}" />
-				</div>
+                                <div class="field">
+                                        <label for="lpr_eta_date"><strong><?php echo esc_html__( 'Default ETA (d-m-Y)', 'lpr-backorder-allocator' ); ?></strong></label>
+                                        <input type="text" id="lpr_eta_date" name="lpr_eta_date" value="<?php echo esc_attr( (string) $eta ); ?>" pattern="\d{2}-\d{2}-\d{4}" placeholder="dd-mm-yyyy" />
+                                </div>
 				<div class="field">
 					<label for="lpr_po_status"><strong><?php echo esc_html__( 'PO Status', 'lpr-backorder-allocator' ); ?></strong></label>
 					<select id="lpr_po_status" name="lpr_po_status">
@@ -1516,7 +1540,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_CPT' ) ) {
 						<th><?php echo esc_html__( 'Variation ID', 'lpr-backorder-allocator' ); ?></th>
 						<th><?php echo esc_html__( 'Qty Ordered', 'lpr-backorder-allocator' ); ?></th>
 						<th><?php echo esc_html__( 'Qty Allocated', 'lpr-backorder-allocator' ); ?></th>
-						<th><?php echo esc_html__( 'ETA Override (Y-m-d)', 'lpr-backorder-allocator' ); ?></th>
+                                                <th><?php echo esc_html__( 'ETA Override (d-m-Y)', 'lpr-backorder-allocator' ); ?></th>
 						<th><?php echo esc_html__( 'Qty Received', 'lpr-backorder-allocator' ); ?></th>
 						<th><?php echo esc_html__( 'Remove', 'lpr-backorder-allocator' ); ?></th>
 					</tr>
@@ -1537,7 +1561,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_CPT' ) ) {
 							<td><input type="number" min="0" step="1" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][variation_id]" value="<?php echo esc_attr( $variation_id ); ?>" /></td>
 							<td><input type="number" min="0" step="1" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][qty_ordered]" value="<?php echo esc_attr( $qty_ordered ); ?>" /></td>
 							<td><input type="number" min="0" step="1" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][qty_allocated]" value="<?php echo esc_attr( $qty_alloc ); ?>" /></td>
-							<td><input type="text" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][eta_override]" value="<?php echo esc_attr( $eta_override ); ?>" placeholder="YYYY-MM-DD" /></td>
+                                                        <td><input type="text" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][eta_override]" value="<?php echo esc_attr( $eta_override ); ?>" placeholder="dd-mm-yyyy" pattern="\d{2}-\d{2}-\d{4}" /></td>
 							<td><input type="number" min="0" step="1" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][qty_received]" value="<?php echo esc_attr( $qty_recv ); ?>" /></td>
 							<td><button type="button" class="button link-delete lpr-remove-line"><?php echo esc_html__( 'Remove', 'lpr-backorder-allocator' ); ?></button></td>
 						</tr>
@@ -1578,7 +1602,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_CPT' ) ) {
 							'<td><input type="number" min="0" step="1" name="lpr_po_lines['+i+'][variation_id]" value="" /></td>'+
 							'<td><input type="number" min="0" step="1" name="lpr_po_lines['+i+'][qty_ordered]" value="0" /></td>'+
 							'<td><input type="number" min="0" step="1" name="lpr_po_lines['+i+'][qty_allocated]" value="0" /></td>'+
-							'<td><input type="text" name="lpr_po_lines['+i+'][eta_override]" value="" placeholder="YYYY-MM-DD" /></td>'+
+                                                        '<td><input type="text" name="lpr_po_lines['+i+'][eta_override]" value="" placeholder="dd-mm-yyyy" pattern="\\d{2}-\\d{2}-\\d{4}" /></td>'+
 							'<td><input type="number" min="0" step="1" name="lpr_po_lines['+i+'][qty_received]" value="0" /></td>'+
 							'<td><button type="button" class="button link-delete lpr-remove-line"><?php echo esc_js( __( 'Remove', 'lpr-backorder-allocator' ) ); ?></button></td>';
 						table.appendChild(tr);
@@ -1863,8 +1887,8 @@ if ( ! class_exists( __NAMESPACE__ . '\ETA' ) ) {
 		protected static $updating = false;
 
 		/**
-		 * Compute earliest ETA over non-released allocations for each order line
-		 * and persist to ORDER_ITEM_META_LINE_ETA (Y-m-d).
+                 * Compute earliest ETA over non-released allocations for each order line
+                 * and persist to ORDER_ITEM_META_LINE_ETA (d-m-Y).
 		 *
 		 * @param int $order_id
 		 * @return void
@@ -1941,7 +1965,7 @@ public static function update_line_eta( int $order_id ): void {
 			$allocs = array();
 		}
 
-		$etas = array();
+                $etas = array();
 
 		foreach ( $allocs as $row ) {
 			$status = isset( $row['status'] ) ? sanitize_key( (string) $row['status'] ) : 'reserved';
@@ -1962,16 +1986,33 @@ public static function update_line_eta( int $order_id ): void {
 				}
 			}
 
-			if ( '' !== $eta ) {
-				$etas[] = $eta;
-			}
-		}
+                        if ( '' !== $eta ) {
+                                $etas[] = $eta;
+                        }
+                }
 
-		$new_eta = '';
-		if ( ! empty( $etas ) ) {
-			sort( $etas, SORT_STRING ); // Y-m-d lexical sort is chronological
-			$new_eta = (string) $etas[0];
-		}
+                $new_eta = '';
+                if ( ! empty( $etas ) ) {
+                        $eta_candidates = array_map(
+                                function( string $eta ): array {
+                                        $ts = strtotime( $eta );
+                                        return array(
+                                                'raw' => $eta,
+                                                'ts'  => $ts ? $ts : PHP_INT_MAX,
+                                        );
+                                },
+                                $etas
+                        );
+
+                        usort(
+                                $eta_candidates,
+                                function( array $a, array $b ): int {
+                                        return $a['ts'] <=> $b['ts'];
+                                }
+                        );
+
+                        $new_eta = (string) $eta_candidates[0]['raw'];
+                }
 
 		$meta_key = defined( __NAMESPACE__ . '\ORDER_ITEM_META_LINE_ETA' ) ? ORDER_ITEM_META_LINE_ETA : '_lpr_line_eta';
 		$prev_eta = (string) $item->get_meta( $meta_key, true );
@@ -3579,9 +3620,9 @@ if ( ! class_exists( __NAMESPACE__ . '\Requested_Delivery_Date_Box' ) ) {
                         wp_nonce_field( 'lpr_requested_delivery', 'lpr_requested_delivery_nonce' );
 
                         echo '<p>';
-                        echo '<label for="lpr_requested_delivery"><strong>' . esc_html__( 'Requested delivery date (Y-m-d)', 'lpr-backorder-allocator' ) . '</strong></label>';
+                        echo '<label for="lpr_requested_delivery"><strong>' . esc_html__( 'Requested delivery date (d-m-Y)', 'lpr-backorder-allocator' ) . '</strong></label>';
                         echo '<br />';
-                        echo '<input type="date" id="lpr_requested_delivery" name="lpr_requested_delivery" value="' . esc_attr( lpr_allocator_sanitize_ymd( $value ) ) . '" pattern="\d{4}-\d{2}-\d{2}" />';
+                        echo '<input type="text" id="lpr_requested_delivery" name="lpr_requested_delivery" value="' . esc_attr( lpr_allocator_sanitize_ymd( $value ) ) . '" pattern="\d{2}-\d{2}-\d{4}" placeholder="dd-mm-yyyy" />';
                         echo '</p>';
                         echo '<p class="description">' . esc_html__( 'We aim to have the order ready at least 14 days before this date. Leave blank for ASAP.', 'lpr-backorder-allocator' ) . '</p>';
                 }
@@ -3663,7 +3704,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Requested_Delivery_Date_Box' ) ) {
 
 /* SELF-CHECK:
 - Added Backorder::needs_allocation(WC_Order_Item_Product) using settings order_statuses, product->backorders_allowed(), and Backordered meta / is_on_backorder($qty).
-- Added ETA::update_line_eta($order_id) to compute earliest Y-m-d ETA across non-released allocations and persist to _lpr_line_eta; hooked on order save (classic + HPOS) with re-entrancy guard.
+- Added ETA::update_line_eta($order_id) to compute earliest d-m-Y ETA across non-released allocations and persist to _lpr_line_eta; hooked on order save (classic + HPOS) with re-entrancy guard.
 - Added admin-only "Allocations & ETA" metabox for orders (classic + HPOS screen ids). Shows per-line ETA or "Unallocated" and lists allocation rows (PO #, qty, ETA, status).
 - All declarations are guarded; HPOS-safe (Woo CRUD only); no frontend hooks; no stock writes; no wildcard meta queries.
 */
@@ -3768,7 +3809,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_Live_Product_UI' ) ) {
 						<th><?php echo esc_html__( 'Product / Variation', 'lpr-backorder-allocator' ); ?></th>
 						<th><?php echo esc_html__( 'Qty Ordered', 'lpr-backorder-allocator' ); ?></th>
 						<th><?php echo esc_html__( 'Qty Allocated', 'lpr-backorder-allocator' ); ?></th>
-						<th><?php echo esc_html__( 'ETA Override (Y-m-d)', 'lpr-backorder-allocator' ); ?></th>
+                                                <th><?php echo esc_html__( 'ETA Override (d-m-Y)', 'lpr-backorder-allocator' ); ?></th>
 						<th><?php echo esc_html__( 'Qty Received', 'lpr-backorder-allocator' ); ?></th>
 						<th><?php echo esc_html__( 'Remove', 'lpr-backorder-allocator' ); ?></th>
 					</tr>
@@ -3810,7 +3851,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_Live_Product_UI' ) ) {
 							</td>
 							<td><input type="number" min="0" step="1" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][qty_ordered]" value="<?php echo esc_attr( (string) $qty_ordered ); ?>" /></td>
 							<td><input type="number" min="0" step="1" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][qty_allocated]" value="<?php echo esc_attr( (string) $qty_alloc ); ?>" /></td>
-							<td><input type="text" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][eta_override]" value="<?php echo esc_attr( $eta_override ); ?>" placeholder="YYYY-MM-DD" /></td>
+                                                        <td><input type="text" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][eta_override]" value="<?php echo esc_attr( $eta_override ); ?>" placeholder="dd-mm-yyyy" pattern="\d{2}-\d{2}-\d{4}" /></td>
 							<td><input type="number" min="0" step="1" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][qty_received]" value="<?php echo esc_attr( (string) $qty_recv ); ?>" /></td>
 							<td><button type="button" class="button link-delete lpr-remove-line"><?php echo esc_html__( 'Remove', 'lpr-backorder-allocator' ); ?></button></td>
 						</tr>
@@ -3861,7 +3902,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_Live_Product_UI' ) ) {
 								'</td>' +
 								'<td><input type="number" min="0" step="1" name="lpr_po_lines['+i+'][qty_ordered]" value="0" /></td>' +
 								'<td><input type="number" min="0" step="1" name="lpr_po_lines['+i+'][qty_allocated]" value="0" /></td>' +
-								'<td><input type="text" name="lpr_po_lines['+i+'][eta_override]" value="" placeholder="YYYY-MM-DD" /></td>' +
+                                                                '<td><input type="text" name="lpr_po_lines['+i+'][eta_override]" value="" placeholder="dd-mm-yyyy" pattern="\\d{2}-\\d{2}-\\d{4}" /></td>' +
 								'<td><input type="number" min="0" step="1" name="lpr_po_lines['+i+'][qty_received]" value="0" /></td>' +
 								'<td><button type="button" class="button link-delete lpr-remove-line"><?php echo esc_js( __( 'Remove', 'lpr-backorder-allocator' ) ); ?></button></td>' +
 							'</tr>';
@@ -4529,7 +4570,7 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                                 return '';
                         }
 
-                        return gmdate( 'Y-m-d', $ts );
+                        return gmdate( 'd-m-Y', $ts );
                 }
 
                 /**
@@ -5564,7 +5605,7 @@ if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_get_or_create_quick_po_f
                                 /* translators: 1: user display name, 2: date time */
                                 __( 'Quick PO Draft – %1$s – %2$s', 'lpr-backorder-allocator' ),
                                 wp_get_current_user()->display_name ?: 'User',
-                                wp_date( 'Y-m-d H:i' )
+                                wp_date( 'd-m-Y H:i' )
                         );
                         $po_id = wp_insert_post(
                                 array(
@@ -6503,7 +6544,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Order_Indexer' ) ) {
                                                         'order_number'     => (string) $number,
                                                         'order_url'        => (string) $order_url,
                                                         'order_date_ts'    => $order_ts,
-                                                        'order_date'       => $order_date ? $order_date->date_i18n( 'Y-m-d' ) : '',
+                                                        'order_date'       => $order_date ? $order_date->date_i18n( 'd-m-Y' ) : '',
                                                         'status'           => (string) $status_h,
                                                         'customer'         => $customer,
                                                         'customer_email'   => (string) $order->get_billing_email(),
@@ -6728,7 +6769,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Orders_Page' ) ) {
                                                 printf(
                                                         /* translators: %s: timestamp */
                                                         esc_html__( 'Last built: %s', 'lpr-backorder-allocator' ),
-                                                        $built_ts ? esc_html( wp_date( 'Y-m-d H:i:s', $built_ts ) ) : esc_html__( 'never', 'lpr-backorder-allocator' )
+                                                        $built_ts ? esc_html( wp_date( 'd-m-Y H:i:s', $built_ts ) ) : esc_html__( 'never', 'lpr-backorder-allocator' )
                                                 );
                                                 ?>
                                         </span>
@@ -7021,10 +7062,10 @@ if ( ! class_exists( __NAMESPACE__ . '\Backordered_Products_Page' ) ) {
 						echo esc_html(
 							sprintf(
 								/* translators: %s: datetime */
-								__( 'Last built: %s', 'lpr-backorder-allocator' ),
-								$built_ts ? wp_date( 'Y-m-d H:i:s', $built_ts ) : __( 'never', 'lpr-backorder-allocator' )
-							)
-						);
+                                                                __( 'Last built: %s', 'lpr-backorder-allocator' ),
+                                                                $built_ts ? wp_date( 'd-m-Y H:i:s', $built_ts ) : __( 'never', 'lpr-backorder-allocator' )
+                                                        )
+                                                );
 						?>
 					</span>
 				</div>
@@ -7088,9 +7129,9 @@ if ( ! class_exists( __NAMESPACE__ . '\Backordered_Products_Page' ) ) {
 												<input type="text" name="supplier_name" />
 											</label>
 											<label>
-												<?php echo esc_html__( 'ETA (Y-m-d)', 'lpr-backorder-allocator' ); ?>
-												<input type="date" name="eta_ymd" />
-											</label>
+                                                                                                <?php echo esc_html__( 'ETA (d-m-Y)', 'lpr-backorder-allocator' ); ?>
+                                                                                                <input type="text" name="eta_ymd" pattern="\d{2}-\d{2}-\d{4}" placeholder="dd-mm-yyyy" />
+                                                                                        </label>
 											<button type="submit" class="button button-secondary"><?php echo esc_html__( 'Add to PO Draft', 'lpr-backorder-allocator' ); ?></button>
 										</form>
 									</td>
