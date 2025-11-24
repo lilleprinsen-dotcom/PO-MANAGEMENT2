@@ -599,28 +599,48 @@ if ( ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Storefront' ) ) {
          */
         class Incoming_Stock_Storefront {
 
+                /**
+                 * Prevent duplicate hooks when the plugin is loaded more than once.
+                 *
+                 * @var bool
+                 */
+                private static $bootstrapped = false;
+
                 public static function init(): void {
-                        if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_frontend_incoming_enabled' ) || ! lpr_allocator_frontend_incoming_enabled() ) {
+                        if ( self::$bootstrapped ) {
                                 return;
                         }
 
-                        add_filter( 'woocommerce_get_availability_text', array( __CLASS__, 'append_incoming_notice' ), 25, 2 );
+                        self::$bootstrapped = true;
+
+                        if ( ! self::is_enabled() ) {
+                                return;
+                        }
+
+                        // Ensure we do not enqueue the filter multiple times if init runs twice.
+                        if ( ! has_filter( 'woocommerce_get_availability_text', array( __CLASS__, 'append_incoming_notice' ) ) ) {
+                                add_filter( 'woocommerce_get_availability_text', array( __CLASS__, 'append_incoming_notice' ), 25, 2 );
+                        }
                 }
 
                 /**
                  * Whether storefront notices should be active.
                  */
-        protected static function is_enabled(): bool {
-                if ( is_admin() && ! wp_doing_ajax() ) {
+                protected static function is_enabled(): bool {
+                        if ( wp_doing_cron() ) {
+                                return false;
+                        }
+
+                        if ( is_admin() && ! wp_doing_ajax() ) {
+                                return false;
+                        }
+
+                        if ( function_exists( __NAMESPACE__ . '\lpr_allocator_frontend_incoming_enabled' ) ) {
+                                return lpr_allocator_frontend_incoming_enabled();
+                        }
+
                         return false;
                 }
-
-                if ( function_exists( __NAMESPACE__ . '\lpr_allocator_frontend_incoming_enabled' ) ) {
-                        return lpr_allocator_frontend_incoming_enabled();
-                }
-
-                return false;
-        }
 
                 /**
                  * Append incoming PO availability to the stock availability message.
