@@ -76,6 +76,8 @@ if ( ! class_exists( __NAMESPACE__ . '\Settings' ) ) {
                                 'order_statuses'        => array( 'processing', 'on-hold' ),
                                 'inform_customer_eta'   => false,
                                 'frontend_extra_pool'   => false,
+                                'frontend_notice_template' => __( '%qty% units expected (ETA %eta%)', 'lpr-backorder-allocator' ),
+                                'frontend_cart_notice_template' => __( 'Next free stock: %qty% units expected (ETA %eta%)', 'lpr-backorder-allocator' ),
                                 'frontend_refresh_interval' => 900,
                                 'auto_allocation_interval' => 0,
                                 'brand_logo_url'        => '',
@@ -145,6 +147,16 @@ if ( ! class_exists( __NAMESPACE__ . '\Settings' ) ) {
                         $inform = ! empty( $raw['inform_customer_eta'] );
                         $front  = ! empty( $raw['frontend_extra_pool'] );
 
+                        $notice_tpl = isset( $raw['frontend_notice_template'] ) ? wp_kses_post( $raw['frontend_notice_template'] ) : '';
+                        if ( '' === trim( $notice_tpl ) ) {
+                                $notice_tpl = $defaults['frontend_notice_template'];
+                        }
+
+                        $cart_notice_tpl = isset( $raw['frontend_cart_notice_template'] ) ? wp_kses_post( $raw['frontend_cart_notice_template'] ) : '';
+                        if ( '' === trim( $cart_notice_tpl ) ) {
+                                $cart_notice_tpl = $defaults['frontend_cart_notice_template'];
+                        }
+
                         $allowed_intervals = array( 300, 900, 1800, 3600, 7200 );
                         $interval         = isset( $raw['frontend_refresh_interval'] ) ? (int) $raw['frontend_refresh_interval'] : $defaults['frontend_refresh_interval'];
                         if ( ! in_array( $interval, $allowed_intervals, true ) ) {
@@ -171,6 +183,8 @@ if ( ! class_exists( __NAMESPACE__ . '\Settings' ) ) {
                                 'order_statuses'        => $statuses,
                                 'inform_customer_eta'   => (bool) $inform,
                                 'frontend_extra_pool'   => (bool) $front,
+                                'frontend_notice_template' => $notice_tpl,
+                                'frontend_cart_notice_template' => $cart_notice_tpl,
                                 'frontend_refresh_interval' => (int) $interval,
                                 'auto_allocation_interval' => (int) $alloc_interval,
                                 'brand_logo_url'        => $logo,
@@ -317,6 +331,26 @@ if ( ! class_exists( __NAMESPACE__ . '\Admin_Settings_Tab' ) ) {
                                 ),
 
                                 array(
+                                        'title'       => __( 'Product page notice text', 'lpr-backorder-allocator' ),
+                                        'desc'        => __( 'Use %qty% and %eta% placeholders. Example: "%qty% units expected (ETA %eta%)"', 'lpr-backorder-allocator' ),
+                                        'id'          => 'lpr_allocator_frontend_notice_template',
+                                        'type'        => 'text',
+                                        'css'         => 'min-width: 400px;',
+                                        'placeholder' => Settings::defaults()['frontend_notice_template'],
+                                        'default'     => Settings::defaults()['frontend_notice_template'],
+                                ),
+
+                                array(
+                                        'title'       => __( 'Cart notice text', 'lpr-backorder-allocator' ),
+                                        'desc'        => __( 'Shown under cart line items. Use %qty% and %eta% placeholders.', 'lpr-backorder-allocator' ),
+                                        'id'          => 'lpr_allocator_frontend_cart_notice_template',
+                                        'type'        => 'text',
+                                        'css'         => 'min-width: 400px;',
+                                        'placeholder' => Settings::defaults()['frontend_cart_notice_template'],
+                                        'default'     => Settings::defaults()['frontend_cart_notice_template'],
+                                ),
+
+                                array(
                                         'title'   => __( 'Storefront refresh interval', 'lpr-backorder-allocator' ),
                                         'desc'    => __( 'How often to refresh incoming supply data on product pages.', 'lpr-backorder-allocator' ),
                                         'id'      => 'lpr_allocator_frontend_refresh_interval',
@@ -403,6 +437,8 @@ if ( ! class_exists( __NAMESPACE__ . '\Admin_Settings_Tab' ) ) {
                                 'lpr_allocator_order_statuses'             => (array) $settings['order_statuses'],
                                 'lpr_allocator_inform_customer_eta'        => $settings['inform_customer_eta'] ? 'yes' : 'no',
                                 'lpr_allocator_frontend_extra_pool'        => $settings['frontend_extra_pool'] ? 'yes' : 'no',
+                                'lpr_allocator_frontend_notice_template'   => (string) $settings['frontend_notice_template'],
+                                'lpr_allocator_frontend_cart_notice_template' => (string) $settings['frontend_cart_notice_template'],
                                 'lpr_allocator_frontend_refresh_interval'  => (int) $settings['frontend_refresh_interval'],
                                 'lpr_allocator_auto_allocation_interval'   => (int) $settings['auto_allocation_interval'],
                                 'lpr_allocator_brand_logo_url'             => (string) $settings['brand_logo_url'],
@@ -491,13 +527,15 @@ if ( ! class_exists( __NAMESPACE__ . '\Admin_Settings_Tab' ) ) {
 			}
 
                         $posted_statuses = isset( $_POST['lpr_allocator_order_statuses'] ) ? (array) wp_unslash( $_POST['lpr_allocator_order_statuses'] ) : array();
-                        $raw = array(
-                                'order_statuses'             => $posted_statuses,
-                                'inform_customer_eta'        => ! empty( $_POST['lpr_allocator_inform_customer_eta'] ),
-                                'frontend_extra_pool'        => ! empty( $_POST['lpr_allocator_frontend_extra_pool'] ),
-                                'frontend_refresh_interval'  => isset( $_POST['lpr_allocator_frontend_refresh_interval'] ) ? (int) $_POST['lpr_allocator_frontend_refresh_interval'] : 0,
-                                'auto_allocation_interval'   => isset( $_POST['lpr_allocator_auto_allocation_interval'] ) ? (int) $_POST['lpr_allocator_auto_allocation_interval'] : 0,
-                                'brand_logo_url'             => isset( $_POST['lpr_allocator_brand_logo_url'] ) ? (string) wp_unslash( $_POST['lpr_allocator_brand_logo_url'] ) : '',
+                                $raw = array(
+                                        'order_statuses'             => $posted_statuses,
+                                        'inform_customer_eta'        => ! empty( $_POST['lpr_allocator_inform_customer_eta'] ),
+                                        'frontend_extra_pool'        => ! empty( $_POST['lpr_allocator_frontend_extra_pool'] ),
+                                        'frontend_notice_template'   => isset( $_POST['lpr_allocator_frontend_notice_template'] ) ? (string) wp_unslash( $_POST['lpr_allocator_frontend_notice_template'] ) : '',
+                                        'frontend_cart_notice_template' => isset( $_POST['lpr_allocator_frontend_cart_notice_template'] ) ? (string) wp_unslash( $_POST['lpr_allocator_frontend_cart_notice_template'] ) : '',
+                                        'frontend_refresh_interval'  => isset( $_POST['lpr_allocator_frontend_refresh_interval'] ) ? (int) $_POST['lpr_allocator_frontend_refresh_interval'] : 0,
+                                        'auto_allocation_interval'   => isset( $_POST['lpr_allocator_auto_allocation_interval'] ) ? (int) $_POST['lpr_allocator_auto_allocation_interval'] : 0,
+                                        'brand_logo_url'             => isset( $_POST['lpr_allocator_brand_logo_url'] ) ? (string) wp_unslash( $_POST['lpr_allocator_brand_logo_url'] ) : '',
                                 'brand_primary_color'        => isset( $_POST['lpr_allocator_brand_primary_color'] ) ? (string) wp_unslash( $_POST['lpr_allocator_brand_primary_color'] ) : '',
                                 'brand_support_email'        => isset( $_POST['lpr_allocator_brand_support_email'] ) ? (string) wp_unslash( $_POST['lpr_allocator_brand_support_email'] ) : '',
                                 'brand_support_phone'        => isset( $_POST['lpr_allocator_brand_support_phone'] ) ? (string) wp_unslash( $_POST['lpr_allocator_brand_support_phone'] ) : '',
@@ -691,17 +729,154 @@ if ( ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Storefront' ) ) {
                         $eta      = (string) get_post_meta( $product_id, defined( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_ETA' ) ? PRODUCT_META_NEXT_EXTRA_ETA : '_lpr_next_extra_eta', true );
                         $eta_text = $eta ? $eta : __( 'No ETA set', 'lpr-backorder-allocator' );
 
-                        $notice = sprintf(
+                        $settings = class_exists( __NAMESPACE__ . '\Settings' ) ? Settings::get() : array();
+                        $notice   = self::build_notice_text(
+                                $qty,
+                                $eta_text,
+                                $settings['frontend_notice_template'] ?? '',
+                                Settings::defaults()['frontend_notice_template']
+                        );
+
+                        return $notice ? ( $text ? trim( $text . ' ' . $notice ) : $notice ) : $text;
+                }
+
+                /**
+                 * Replace placeholders in a custom template and fallback to defaults if needed.
+                 */
+                public static function build_notice_text( int $qty, string $eta_text, string $template = '', string $fallback_template = '' ): string {
+                        $template = '' !== trim( $template ) ? $template : $fallback_template;
+
+                        $rendered = '' !== trim( $template ) ? self::render_template( $template, $qty, $eta_text ) : '';
+                        if ( '' !== $rendered ) {
+                                return $rendered;
+                        }
+
+                        return self::default_notice( $qty, $eta_text );
+                }
+
+                /**
+                 * Apply quantity/ETA tokens to a template string.
+                 */
+                protected static function render_template( string $template, int $qty, string $eta_text ): string {
+                        $replacements = array(
+                                '%qty%' => (string) $qty,
+                                '%eta%' => $eta_text,
+                                '(qty)' => (string) $qty,
+                                '(eta)' => $eta_text,
+                        );
+
+                        $rendered = strtr( $template, $replacements );
+                        $rendered = trim( $rendered );
+
+                        return '' === $rendered ? '' : wp_kses_post( $rendered );
+                }
+
+                /**
+                 * Default notice used when no template is supplied.
+                 */
+                protected static function default_notice( int $qty, string $eta_text ): string {
+                        return sprintf(
                                 /* translators: 1: quantity, 2: ETA date */
                                 _n( '%1$d unit expected (ETA %2$s)', '%1$d units expected (ETA %2$s)', $qty, 'lpr-backorder-allocator' ),
                                 $qty,
                                 $eta_text
                         );
-
-                        return $text ? trim( $text . ' ' . $notice ) : $notice;
                 }
         }
         Incoming_Stock_Storefront::init();
+}
+
+if ( ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Cart' ) ) {
+        /**
+         * Show incoming availability notices on cart line items.
+         */
+        class Incoming_Stock_Cart {
+
+                /**
+                 * Prevent duplicate hooks.
+                 *
+                 * @var bool
+                 */
+                private static $bootstrapped = false;
+
+                public static function init(): void {
+                        if ( self::$bootstrapped ) {
+                                return;
+                        }
+
+                        self::$bootstrapped = true;
+
+                        if ( ! self::is_enabled() ) {
+                                return;
+                        }
+
+                        add_action( 'woocommerce_after_cart_item_name', array( __CLASS__, 'render_notice' ), 15, 2 );
+                }
+
+                /**
+                 * Ensure notices only run on the storefront.
+                 */
+                protected static function is_enabled(): bool {
+                        if ( wp_doing_cron() ) {
+                                return false;
+                        }
+
+                        if ( is_admin() && ! wp_doing_ajax() ) {
+                                return false;
+                        }
+
+                        if ( function_exists( __NAMESPACE__ . '\lpr_allocator_frontend_incoming_enabled' ) ) {
+                                return lpr_allocator_frontend_incoming_enabled();
+                        }
+
+                        return false;
+                }
+
+                /**
+                 * Output the incoming stock notice under cart item names.
+                 *
+                 * @param array            $cart_item
+                 * @param string|int       $cart_item_key
+                 */
+                public static function render_notice( array $cart_item, $cart_item_key ): void { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable
+                        if ( ! self::is_enabled() ) {
+                                return;
+                        }
+
+                        $product = $cart_item['data'] ?? null;
+                        if ( ! $product instanceof \WC_Product ) {
+                                return;
+                        }
+
+                        $product_id = (int) $product->get_id();
+                        if ( $product_id <= 0 ) {
+                                return;
+                        }
+
+                        $qty = (int) get_post_meta( $product_id, defined( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_QTY' ) ? PRODUCT_META_NEXT_EXTRA_QTY : '_lpr_next_extra_qty', true );
+                        if ( $qty <= 0 ) {
+                                return;
+                        }
+
+                        $eta      = (string) get_post_meta( $product_id, defined( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_ETA' ) ? PRODUCT_META_NEXT_EXTRA_ETA : '_lpr_next_extra_eta', true );
+                        $eta_text = $eta ? $eta : __( 'No ETA set', 'lpr-backorder-allocator' );
+
+                        $settings = class_exists( __NAMESPACE__ . '\Settings' ) ? Settings::get() : array();
+                        $notice   = Incoming_Stock_Storefront::build_notice_text(
+                                $qty,
+                                $eta_text,
+                                $settings['frontend_cart_notice_template'] ?? '',
+                                Settings::defaults()['frontend_cart_notice_template']
+                        );
+
+                        if ( '' === $notice ) {
+                                return;
+                        }
+
+                        echo '<div class="lpr-incoming-cart-notice">' . $notice . '</div>';
+                }
+        }
+        Incoming_Stock_Cart::init();
 }
 
 if ( ! is_admin() && ! wp_doing_cron() ) {
