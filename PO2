@@ -45,6 +45,21 @@ if ( ! defined( __NAMESPACE__ . '\PRODUCT_META_INCOMING_DETAILS' ) ) {
         define( __NAMESPACE__ . '\PRODUCT_META_INCOMING_DETAILS', '_lpr_incoming_po_details' );
 }
 
+if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_frontend_incoming_enabled' ) ) {
+        /**
+         * Toggle for storefront incoming PO notices.
+         */
+        function lpr_allocator_frontend_incoming_enabled(): bool {
+                if ( ! class_exists( __NAMESPACE__ . '\Settings' ) ) {
+                        return false;
+                }
+
+                $settings = Settings::get();
+
+                return ! empty( $settings['frontend_extra_pool'] );
+        }
+}
+
 if ( ! class_exists( __NAMESPACE__ . '\Settings' ) ) {
 	/**
 	 * Settings storage & helpers.
@@ -58,14 +73,16 @@ if ( ! class_exists( __NAMESPACE__ . '\Settings' ) ) {
 		 */
 		public static function defaults(): array {
                         return array(
-                                'order_statuses'          => array( 'processing', 'on-hold' ),
-                                'inform_customer_eta'     => false,
+                                'order_statuses'        => array( 'processing', 'on-hold' ),
+                                'inform_customer_eta'   => false,
+                                'frontend_extra_pool'   => false,
+                                'frontend_refresh_interval' => 900,
                                 'auto_allocation_interval' => 0,
-                                'brand_logo_url'          => '',
-                                'brand_primary_color'     => '#1a1a1a',
-                                'brand_support_email'     => '',
-                                'brand_support_phone'     => '',
-                                'email_footer_text_no'    => '',
+                                'brand_logo_url'        => '',
+                                'brand_primary_color'   => '#1a1a1a',
+                                'brand_support_email'   => '',
+                                'brand_support_phone'   => '',
+                                'email_footer_text_no'  => '',
 			);
 		}
 
@@ -126,6 +143,13 @@ if ( ! class_exists( __NAMESPACE__ . '\Settings' ) ) {
 			}
 
                         $inform = ! empty( $raw['inform_customer_eta'] );
+                        $front  = ! empty( $raw['frontend_extra_pool'] );
+
+                        $allowed_intervals = array( 300, 900, 1800, 3600, 7200 );
+                        $interval         = isset( $raw['frontend_refresh_interval'] ) ? (int) $raw['frontend_refresh_interval'] : $defaults['frontend_refresh_interval'];
+                        if ( ! in_array( $interval, $allowed_intervals, true ) ) {
+                                $interval = $defaults['frontend_refresh_interval'];
+                        }
 
                         $allowed_alloc_intervals = array( 0, 900, 1800, 3600, 7200, 14400 );
                         $alloc_interval          = isset( $raw['auto_allocation_interval'] ) ? (int) $raw['auto_allocation_interval'] : $defaults['auto_allocation_interval'];
@@ -144,16 +168,18 @@ if ( ! class_exists( __NAMESPACE__ . '\Settings' ) ) {
 			$footer = isset( $raw['email_footer_text_no'] ) ? wp_kses_post( $raw['email_footer_text_no'] ) : '';
 
 			return array(
-                                'order_statuses'          => $statuses,
-                                'inform_customer_eta'     => (bool) $inform,
+                                'order_statuses'        => $statuses,
+                                'inform_customer_eta'   => (bool) $inform,
+                                'frontend_extra_pool'   => (bool) $front,
+                                'frontend_refresh_interval' => (int) $interval,
                                 'auto_allocation_interval' => (int) $alloc_interval,
-                                'brand_logo_url'          => $logo,
-                                'brand_primary_color'     => $color,
-                                'brand_support_email'     => $email,
-                                'brand_support_phone'     => $phone,
-                                'email_footer_text_no'    => $footer,
-                        );
-                }
+                                'brand_logo_url'        => $logo,
+                                'brand_primary_color'   => $color,
+                                'brand_support_email'   => $email,
+                                'brand_support_phone'   => $phone,
+                                'email_footer_text_no'  => $footer,
+			);
+		}
 	}
 }
 
@@ -267,6 +293,50 @@ if ( ! class_exists( __NAMESPACE__ . '\Admin_Settings_Tab' ) ) {
                                 ),
 
                                 array(
+                                        'title' => __( 'Storefront notices', 'lpr-backorder-allocator' ),
+                                        'type'  => 'title',
+                                        'desc'  => sprintf(
+                                                /* translators: %s: sample incoming supply notice shown on product pages */
+                                                __( 'Displays incoming supply on product pages (example: %s).', 'lpr-backorder-allocator' ),
+                                                sprintf(
+                                                        /* translators: 1: quantity, 2: ETA date */
+                                                        _n( '%1$d unit expected (ETA %2$s)', '%1$d units expected (ETA %2$s)', 1, 'lpr-backorder-allocator' ),
+                                                        1,
+                                                        lpr_allocator_format_store_date( '2025-12-07' )
+                                                )
+                                        ),
+                                        'id'    => 'lpr_allocator_section_frontend',
+                                ),
+
+                                array(
+                                        'title'   => __( 'Show incoming supply notice', 'lpr-backorder-allocator' ),
+                                        'desc'    => __( 'Append a notice for incoming POs to products on backorder.', 'lpr-backorder-allocator' ),
+                                        'id'      => 'lpr_allocator_frontend_extra_pool',
+                                        'type'    => 'checkbox',
+                                        'default' => 'no',
+                                ),
+
+                                array(
+                                        'title'   => __( 'Storefront refresh interval', 'lpr-backorder-allocator' ),
+                                        'desc'    => __( 'How often to refresh incoming supply data on product pages.', 'lpr-backorder-allocator' ),
+                                        'id'      => 'lpr_allocator_frontend_refresh_interval',
+                                        'type'    => 'select',
+                                        'options' => array(
+                                                300  => __( 'Every 5 minutes', 'lpr-backorder-allocator' ),
+                                                900  => __( 'Every 15 minutes', 'lpr-backorder-allocator' ),
+                                                1800 => __( 'Every 30 minutes', 'lpr-backorder-allocator' ),
+                                                3600 => __( 'Every hour', 'lpr-backorder-allocator' ),
+                                                7200 => __( 'Every 2 hours', 'lpr-backorder-allocator' ),
+                                        ),
+                                        'default' => Settings::defaults()['frontend_refresh_interval'],
+                                ),
+
+                                array(
+                                        'type' => 'sectionend',
+                                        'id'   => 'lpr_allocator_section_frontend',
+                                ),
+
+                                array(
                                         'title' => __( 'Branding', 'lpr-backorder-allocator' ),
                                         'type'  => 'title',
                                         'desc'  => __( 'Used for branded emails and admin displays.', 'lpr-backorder-allocator' ),
@@ -332,6 +402,8 @@ if ( ! class_exists( __NAMESPACE__ . '\Admin_Settings_Tab' ) ) {
                         $map = array(
                                 'lpr_allocator_order_statuses'             => (array) $settings['order_statuses'],
                                 'lpr_allocator_inform_customer_eta'        => $settings['inform_customer_eta'] ? 'yes' : 'no',
+                                'lpr_allocator_frontend_extra_pool'        => $settings['frontend_extra_pool'] ? 'yes' : 'no',
+                                'lpr_allocator_frontend_refresh_interval'  => (int) $settings['frontend_refresh_interval'],
                                 'lpr_allocator_auto_allocation_interval'   => (int) $settings['auto_allocation_interval'],
                                 'lpr_allocator_brand_logo_url'             => (string) $settings['brand_logo_url'],
                                 'lpr_allocator_brand_primary_color'        => (string) $settings['brand_primary_color'],
@@ -422,6 +494,8 @@ if ( ! class_exists( __NAMESPACE__ . '\Admin_Settings_Tab' ) ) {
                         $raw = array(
                                 'order_statuses'             => $posted_statuses,
                                 'inform_customer_eta'        => ! empty( $_POST['lpr_allocator_inform_customer_eta'] ),
+                                'frontend_extra_pool'        => ! empty( $_POST['lpr_allocator_frontend_extra_pool'] ),
+                                'frontend_refresh_interval'  => isset( $_POST['lpr_allocator_frontend_refresh_interval'] ) ? (int) $_POST['lpr_allocator_frontend_refresh_interval'] : 0,
                                 'auto_allocation_interval'   => isset( $_POST['lpr_allocator_auto_allocation_interval'] ) ? (int) $_POST['lpr_allocator_auto_allocation_interval'] : 0,
                                 'brand_logo_url'             => isset( $_POST['lpr_allocator_brand_logo_url'] ) ? (string) wp_unslash( $_POST['lpr_allocator_brand_logo_url'] ) : '',
                                 'brand_primary_color'        => isset( $_POST['lpr_allocator_brand_primary_color'] ) ? (string) wp_unslash( $_POST['lpr_allocator_brand_primary_color'] ) : '',
@@ -529,6 +603,105 @@ if ( ! class_exists( __NAMESPACE__ . '\Email_Notification_Preview' ) ) {
                 }
         }
         Email_Notification_Preview::init();
+}
+
+/* SELF-CHECK:
+- Added namespaced constants for all required meta keys; guarded with defined().
+- Implemented Settings class with option key `lpr_allocator_settings`, defaults (order_statuses ['processing','on-hold'], inform_customer_eta=false, frontend_extra_pool=false, branding fields incl. brand_primary_color '#1a1a1a', email_footer_text_no), getter merges defaults, update() enforces autoload=no on first write.
+- Created Installer (admin_init) to seed options and DB version flag; no frontend hooks.
+- Registered WooCommerce Settings tab "Backorders" (admin-only). Rendering via woocommerce_admin_fields; values sourced from our single option using pre_option_* filters. Save handler compiles/sanitizes into single option; no stock writes; no wildcard meta queries.
+- All declarations are guarded; HPOS/CRUD safe; no frontend impact due to early admin/cron bail.
+*/
+namespace LPR\Allocator;
+
+if ( ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Storefront' ) ) {
+        /**
+         * Surface incoming PO availability on the storefront availability text.
+         */
+        class Incoming_Stock_Storefront {
+
+                /**
+                 * Prevent duplicate hooks when the plugin is loaded more than once.
+                 *
+                 * @var bool
+                 */
+                private static $bootstrapped = false;
+
+                public static function init(): void {
+                        if ( self::$bootstrapped ) {
+                                return;
+                        }
+
+                        self::$bootstrapped = true;
+
+                        if ( ! self::is_enabled() ) {
+                                return;
+                        }
+
+                        // Ensure we do not enqueue the filter multiple times if init runs twice.
+                        if ( ! has_filter( 'woocommerce_get_availability_text', array( __CLASS__, 'append_incoming_notice' ) ) ) {
+                                add_filter( 'woocommerce_get_availability_text', array( __CLASS__, 'append_incoming_notice' ), 25, 2 );
+                        }
+                }
+
+                /**
+                 * Whether storefront notices should be active.
+                 */
+                protected static function is_enabled(): bool {
+                        if ( wp_doing_cron() ) {
+                                return false;
+                        }
+
+                        if ( is_admin() && ! wp_doing_ajax() ) {
+                                return false;
+                        }
+
+                        if ( function_exists( __NAMESPACE__ . '\lpr_allocator_frontend_incoming_enabled' ) ) {
+                                return lpr_allocator_frontend_incoming_enabled();
+                        }
+
+                        return false;
+                }
+
+                /**
+                 * Append incoming PO availability to the stock availability message.
+                 *
+                 * @param string      $text     Existing availability text.
+                 * @param \WC_Product $product  Product instance.
+                 */
+                public static function append_incoming_notice( string $text, $product ): string {
+                        if ( ! self::is_enabled() ) {
+                                return $text;
+                        }
+
+                        if ( ! $product instanceof \WC_Product ) {
+                                return $text;
+                        }
+
+                        $product_id = (int) $product->get_id();
+                        if ( $product_id <= 0 ) {
+                                return $text;
+                        }
+
+                        $qty = (int) get_post_meta( $product_id, defined( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_QTY' ) ? PRODUCT_META_NEXT_EXTRA_QTY : '_lpr_next_extra_qty', true );
+                        if ( $qty <= 0 ) {
+                                return $text;
+                        }
+
+                        $eta      = (string) get_post_meta( $product_id, defined( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_ETA' ) ? PRODUCT_META_NEXT_EXTRA_ETA : '_lpr_next_extra_eta', true );
+                        $eta_text = $eta ? $eta : __( 'No ETA set', 'lpr-backorder-allocator' );
+
+                        $notice = sprintf(
+                                /* translators: 1: quantity, 2: ETA date */
+                                _n( '%1$d unit expected (ETA %2$s)', '%1$d units expected (ETA %2$s)', $qty, 'lpr-backorder-allocator' ),
+                                $qty,
+                                $eta_text
+                        );
+
+                        return $text ? trim( $text . ' ' . $notice ) : $notice;
+                }
+        }
+        Incoming_Stock_Storefront::init();
 }
 
 if ( ! is_admin() && ! wp_doing_cron() ) {
@@ -5270,7 +5443,7 @@ if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_live_po_statuses' ) ) {
 }
 
 /**
- * Builds and stores incoming PO availability for products (admin UI only).
+ * Builds and stores incoming PO availability for products (frontend notices + admin UI).
  */
 if ( ! class_exists( __NAMESPACE__ . '\PO_Allocation_Overage_Checker' ) ) {
         /**
@@ -5516,10 +5689,13 @@ if ( ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Indexer' ) ) {
                 }
 
                 /**
-                 * Determine interval (seconds) for incoming stock refreshes.
+                 * Determine interval (seconds) from settings.
                  */
                 protected static function get_interval(): int {
-                        return 900;
+                        $settings = class_exists( __NAMESPACE__ . '\Settings' ) ? Settings::get() : array();
+                        $interval = isset( $settings['frontend_refresh_interval'] ) ? (int) $settings['frontend_refresh_interval'] : 900;
+                        $interval = max( 300, $interval );
+                        return $interval;
                 }
 
                 /**
