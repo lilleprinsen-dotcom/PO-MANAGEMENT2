@@ -604,7 +604,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Storefront' ) ) {
                  *
                  * @var bool
                  */
-                private static bool $bootstrapped = false;
+                private static $bootstrapped = false;
 
                 public static function init(): void {
                         if ( self::$bootstrapped ) {
