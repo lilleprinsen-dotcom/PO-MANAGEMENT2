@@ -292,10 +292,54 @@ if ( ! class_exists( __NAMESPACE__ . '\Admin_Settings_Tab' ) ) {
                                         'id'    => 'lpr_allocator_section_main',
                                 ),
 
-				array(
-					'title' => __( 'Branding', 'lpr-backorder-allocator' ),
-					'type'  => 'title',
-					'desc'  => __( 'Used for branded emails and admin displays.', 'lpr-backorder-allocator' ),
+                                array(
+                                        'title' => __( 'Storefront notices', 'lpr-backorder-allocator' ),
+                                        'type'  => 'title',
+                                        'desc'  => sprintf(
+                                                /* translators: %s: sample incoming supply notice shown on product pages */
+                                                __( 'Displays incoming supply on product pages (example: %s).', 'lpr-backorder-allocator' ),
+                                                sprintf(
+                                                        /* translators: 1: quantity, 2: ETA date */
+                                                        _n( '%1$d unit expected (ETA %2$s)', '%1$d units expected (ETA %2$s)', 1, 'lpr-backorder-allocator' ),
+                                                        1,
+                                                        lpr_allocator_format_store_date( '2025-12-07' )
+                                                )
+                                        ),
+                                        'id'    => 'lpr_allocator_section_frontend',
+                                ),
+
+                                array(
+                                        'title'   => __( 'Show incoming supply notice', 'lpr-backorder-allocator' ),
+                                        'desc'    => __( 'Append a notice for incoming POs to products on backorder.', 'lpr-backorder-allocator' ),
+                                        'id'      => 'lpr_allocator_frontend_extra_pool',
+                                        'type'    => 'checkbox',
+                                        'default' => 'no',
+                                ),
+
+                                array(
+                                        'title'   => __( 'Storefront refresh interval', 'lpr-backorder-allocator' ),
+                                        'desc'    => __( 'How often to refresh incoming supply data on product pages.', 'lpr-backorder-allocator' ),
+                                        'id'      => 'lpr_allocator_frontend_refresh_interval',
+                                        'type'    => 'select',
+                                        'options' => array(
+                                                300  => __( 'Every 5 minutes', 'lpr-backorder-allocator' ),
+                                                900  => __( 'Every 15 minutes', 'lpr-backorder-allocator' ),
+                                                1800 => __( 'Every 30 minutes', 'lpr-backorder-allocator' ),
+                                                3600 => __( 'Every hour', 'lpr-backorder-allocator' ),
+                                                7200 => __( 'Every 2 hours', 'lpr-backorder-allocator' ),
+                                        ),
+                                        'default' => Settings::defaults()['frontend_refresh_interval'],
+                                ),
+
+                                array(
+                                        'type' => 'sectionend',
+                                        'id'   => 'lpr_allocator_section_frontend',
+                                ),
+
+                                array(
+                                        'title' => __( 'Branding', 'lpr-backorder-allocator' ),
+                                        'type'  => 'title',
+                                        'desc'  => __( 'Used for branded emails and admin displays.', 'lpr-backorder-allocator' ),
 					'id'    => 'lpr_allocator_section_brand',
 				),
 
@@ -355,16 +399,18 @@ if ( ! class_exists( __NAMESPACE__ . '\Admin_Settings_Tab' ) ) {
 		 * Provide field values to WC renderer from our single option via pre_option_*.
 		 */
 		protected static function prime_field_values( array $settings ): void {
-                                $map = array(
-                                        'lpr_allocator_order_statuses'       => (array) $settings['order_statuses'],
-                                        'lpr_allocator_inform_customer_eta'  => $settings['inform_customer_eta'] ? 'yes' : 'no',
-                                        'lpr_allocator_auto_allocation_interval' => (int) $settings['auto_allocation_interval'],
-                                        'lpr_allocator_brand_logo_url'       => (string) $settings['brand_logo_url'],
-                                        'lpr_allocator_brand_primary_color'  => (string) $settings['brand_primary_color'],
-                                        'lpr_allocator_brand_support_email'  => (string) $settings['brand_support_email'],
-                                        'lpr_allocator_brand_support_phone'  => (string) $settings['brand_support_phone'],
-                                        'lpr_allocator_email_footer_text_no' => (string) $settings['email_footer_text_no'],
-			);
+                        $map = array(
+                                'lpr_allocator_order_statuses'             => (array) $settings['order_statuses'],
+                                'lpr_allocator_inform_customer_eta'        => $settings['inform_customer_eta'] ? 'yes' : 'no',
+                                'lpr_allocator_frontend_extra_pool'        => $settings['frontend_extra_pool'] ? 'yes' : 'no',
+                                'lpr_allocator_frontend_refresh_interval'  => (int) $settings['frontend_refresh_interval'],
+                                'lpr_allocator_auto_allocation_interval'   => (int) $settings['auto_allocation_interval'],
+                                'lpr_allocator_brand_logo_url'             => (string) $settings['brand_logo_url'],
+                                'lpr_allocator_brand_primary_color'        => (string) $settings['brand_primary_color'],
+                                'lpr_allocator_brand_support_email'        => (string) $settings['brand_support_email'],
+                                'lpr_allocator_brand_support_phone'        => (string) $settings['brand_support_phone'],
+                                'lpr_allocator_email_footer_text_no'       => (string) $settings['email_footer_text_no'],
+                        );
 
 			foreach ( $map as $opt => $val ) {
 				add_filter(
@@ -444,17 +490,19 @@ if ( ! class_exists( __NAMESPACE__ . '\Admin_Settings_Tab' ) ) {
 				check_admin_referer( 'woocommerce-settings' );
 			}
 
-                                $posted_statuses = isset( $_POST['lpr_allocator_order_statuses'] ) ? (array) wp_unslash( $_POST['lpr_allocator_order_statuses'] ) : array();
-                                $raw = array(
-                                        'order_statuses'        => $posted_statuses,
-                                        'inform_customer_eta'   => ! empty( $_POST['lpr_allocator_inform_customer_eta'] ),
-                                        'auto_allocation_interval' => isset( $_POST['lpr_allocator_auto_allocation_interval'] ) ? (int) $_POST['lpr_allocator_auto_allocation_interval'] : 0,
-                                        'brand_logo_url'        => isset( $_POST['lpr_allocator_brand_logo_url'] ) ? (string) wp_unslash( $_POST['lpr_allocator_brand_logo_url'] ) : '',
-                                        'brand_primary_color'   => isset( $_POST['lpr_allocator_brand_primary_color'] ) ? (string) wp_unslash( $_POST['lpr_allocator_brand_primary_color'] ) : '',
-                                        'brand_support_email'   => isset( $_POST['lpr_allocator_brand_support_email'] ) ? (string) wp_unslash( $_POST['lpr_allocator_brand_support_email'] ) : '',
-                                        'brand_support_phone'   => isset( $_POST['lpr_allocator_brand_support_phone'] ) ? (string) wp_unslash( $_POST['lpr_allocator_brand_support_phone'] ) : '',
-                                        'email_footer_text_no'  => isset( $_POST['lpr_allocator_email_footer_text_no'] ) ? (string) wp_unslash( $_POST['lpr_allocator_email_footer_text_no'] ) : '',
-                                );
+                        $posted_statuses = isset( $_POST['lpr_allocator_order_statuses'] ) ? (array) wp_unslash( $_POST['lpr_allocator_order_statuses'] ) : array();
+                        $raw = array(
+                                'order_statuses'             => $posted_statuses,
+                                'inform_customer_eta'        => ! empty( $_POST['lpr_allocator_inform_customer_eta'] ),
+                                'frontend_extra_pool'        => ! empty( $_POST['lpr_allocator_frontend_extra_pool'] ),
+                                'frontend_refresh_interval'  => isset( $_POST['lpr_allocator_frontend_refresh_interval'] ) ? (int) $_POST['lpr_allocator_frontend_refresh_interval'] : 0,
+                                'auto_allocation_interval'   => isset( $_POST['lpr_allocator_auto_allocation_interval'] ) ? (int) $_POST['lpr_allocator_auto_allocation_interval'] : 0,
+                                'brand_logo_url'             => isset( $_POST['lpr_allocator_brand_logo_url'] ) ? (string) wp_unslash( $_POST['lpr_allocator_brand_logo_url'] ) : '',
+                                'brand_primary_color'        => isset( $_POST['lpr_allocator_brand_primary_color'] ) ? (string) wp_unslash( $_POST['lpr_allocator_brand_primary_color'] ) : '',
+                                'brand_support_email'        => isset( $_POST['lpr_allocator_brand_support_email'] ) ? (string) wp_unslash( $_POST['lpr_allocator_brand_support_email'] ) : '',
+                                'brand_support_phone'        => isset( $_POST['lpr_allocator_brand_support_phone'] ) ? (string) wp_unslash( $_POST['lpr_allocator_brand_support_phone'] ) : '',
+                                'email_footer_text_no'       => isset( $_POST['lpr_allocator_email_footer_text_no'] ) ? (string) wp_unslash( $_POST['lpr_allocator_email_footer_text_no'] ) : '',
+                        );
 
                         Settings::update( $raw );
 
