@@ -6067,6 +6067,522 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Indexer' ) ) {
 }
 
 /**
+ * Cached index of backordered order lines (one row per line).
+ */
+if ( ! class_exists( __NAMESPACE__ . '\Backorder_Order_Indexer' ) ) {
+        class Backorder_Order_Indexer {
+
+                const OPT_KEY      = 'lpr_allocator_backorder_order_index';
+                const MAX_AGE      = 600; // seconds
+                const ACTION_BUILD = 'lpr_allocator_build_order_backorder_index';
+
+                public static function init(): void {
+                        add_action( 'admin_init', array( __CLASS__, 'ensure_index_option' ) );
+                        add_action( 'admin_post_lpr_build_order_backorder_index', array( __CLASS__, 'handle_build_request' ) );
+
+                        // Async worker.
+                        add_action( self::ACTION_BUILD, array( __CLASS__, 'build_and_store' ) );
+
+                        // Triggers: order lifecycle.
+                        add_action( 'woocommerce_new_order', array( __CLASS__, 'queue_rebuild' ) );
+                        add_action( 'woocommerce_order_status_changed', array( __CLASS__, 'queue_rebuild' ) );
+                        add_action( 'woocommerce_after_order_object_save', array( __CLASS__, 'queue_rebuild' ) );
+                        add_action( 'woocommerce_new_order_item', array( __CLASS__, 'queue_rebuild' ) );
+                        add_action( 'woocommerce_update_order_item_meta', array( __CLASS__, 'queue_rebuild' ) );
+                        add_action( 'woocommerce_before_delete_order_item', array( __CLASS__, 'queue_rebuild' ) );
+
+                        // Triggers: allocation/meta changes (order item allocations + ETA updates).
+                        add_action(
+                                'updated_post_meta',
+                                array( __CLASS__, 'maybe_handle_meta_change' ),
+                                10,
+                                4
+                        );
+
+                        // Triggers: PO ETA/status changes (affects allocation source + ETA text).
+                        add_action( 'transition_post_status', array( __CLASS__, 'handle_po_status_change' ), 10, 3 );
+                        add_action( 'before_delete_post', array( __CLASS__, 'handle_po_delete' ) );
+                }
+
+                public static function ensure_index_option(): void {
+                        if ( null === get_option( self::OPT_KEY, null ) ) {
+                                add_option( self::OPT_KEY, array( 'built_at' => 0, 'rows' => array() ), '', 'no' );
+                                self::queue_rebuild();
+                        }
+                }
+
+                public static function handle_build_request(): void {
+                        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+                                wp_die( esc_html__( 'Insufficient permissions.', 'lpr-backorder-allocator' ) );
+                        }
+                        $nonce = isset( $_GET['_wpnonce'] ) ? (string) $_GET['_wpnonce'] : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+                        if ( ! wp_verify_nonce( $nonce, 'lpr_build_order_backorder_index' ) ) {
+                                wp_die( esc_html__( 'Invalid request.', 'lpr-backorder-allocator' ) );
+                        }
+
+                        $redirect = isset( $_GET['redirect'] ) ? esc_url_raw( wp_unslash( $_GET['redirect'] ) ) : admin_url( 'admin.php?page=lpr-backorder-orders' ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+                        self::queue_rebuild();
+
+                        wp_safe_redirect( add_query_arg( array( 'lpr_order_index' => 'queued' ), $redirect ) );
+                        exit;
+                }
+
+                public static function get_index( bool $allow_stale = true ): array {
+                        $idx = get_option( self::OPT_KEY, array( 'built_at' => 0, 'rows' => array() ) );
+                        if ( ! is_array( $idx ) || ! isset( $idx['rows'] ) ) {
+                                $idx = array( 'built_at' => 0, 'rows' => array() );
+                        }
+                        if ( ! $allow_stale ) {
+                                $stale = ( time() - (int) $idx['built_at'] ) > self::MAX_AGE;
+                                if ( $stale ) {
+                                        self::queue_rebuild();
+                                }
+                        }
+                        return $idx;
+                }
+
+                public static function queue_rebuild( ...$args ): void {
+                        if ( function_exists( 'as_enqueue_async_action' ) ) {
+                                as_enqueue_async_action( self::ACTION_BUILD, array(), 'lpr-allocator' );
+                        } elseif ( function_exists( 'as_schedule_single_action' ) ) {
+                                as_schedule_single_action( time(), self::ACTION_BUILD, array(), 'lpr-allocator' );
+                        } else {
+                                self::build_and_store();
+                        }
+                }
+
+                public static function maybe_handle_meta_change( $meta_id, $object_id, $meta_key, $meta_value ): void { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.FunctionNameInvalid
+                        $watched = array(
+                                defined( __NAMESPACE__ . '\ORDER_ITEM_META_ALLOCATIONS' ) ? ORDER_ITEM_META_ALLOCATIONS : 'lpr_allocations',
+                                defined( __NAMESPACE__ . '\ORDER_ITEM_META_LINE_ETA' ) ? ORDER_ITEM_META_LINE_ETA : '_lpr_line_eta',
+                                defined( __NAMESPACE__ . '\PO_META_ETA_DATE' ) ? PO_META_ETA_DATE : '_lpr_eta_date',
+                        );
+
+                        if ( in_array( $meta_key, $watched, true ) ) {
+                                self::queue_rebuild();
+                        }
+                }
+
+                public static function handle_po_status_change( string $new_status, string $old_status, \WP_Post $post ): void {
+                        if ( ! ( $post instanceof \WP_Post ) ) {
+                                return;
+                        }
+                        if ( ( defined( __NAMESPACE__ . '\CPT_SUPPLIER_PO' ) ? CPT_SUPPLIER_PO : 'supplier_po' ) !== $post->post_type ) {
+                                return;
+                        }
+                        self::queue_rebuild();
+                }
+
+                public static function handle_po_delete( int $post_id ): void {
+                        $post = get_post( $post_id );
+                        if ( ! ( $post instanceof \WP_Post ) ) {
+                                return;
+                        }
+                        if ( ( defined( __NAMESPACE__ . '\CPT_SUPPLIER_PO' ) ? CPT_SUPPLIER_PO : 'supplier_po' ) !== $post->post_type ) {
+                                return;
+                        }
+                        self::queue_rebuild();
+                }
+
+                public static function build_and_store(): void {
+                        $snapshot = self::build_snapshot();
+                        $existing = get_option( self::OPT_KEY, null );
+                        if ( null === $existing ) {
+                                add_option( self::OPT_KEY, $snapshot, '', 'no' );
+                        } else {
+                                update_option( self::OPT_KEY, $snapshot, false );
+                        }
+                }
+
+                protected static function build_snapshot(): array {
+                        $settings = class_exists( __NAMESPACE__ . '\Settings' ) ? Settings::get() : array( 'order_statuses' => array( 'processing', 'on-hold' ) );
+                        $statuses = array();
+                        foreach ( (array) $settings['order_statuses'] as $st ) {
+                                $statuses[] = 'wc-' . preg_replace( '/^wc-/', '', sanitize_key( $st ) );
+                        }
+
+                        $rows  = array();
+                        $page  = 1;
+                        $limit = 50;
+
+                        do {
+                                $args      = array(
+                                        'status'  => $statuses,
+                                        'limit'   => $limit,
+                                        'page'    => $page,
+                                        'orderby' => 'date',
+                                        'order'   => 'ASC',
+                                        'return'  => 'ids',
+                                        'type'    => 'shop_order',
+                                );
+                                $order_ids = function_exists( 'wc_get_orders' ) ? wc_get_orders( $args ) : array();
+                                if ( empty( $order_ids ) ) {
+                                        break;
+                                }
+
+                                foreach ( $order_ids as $oid ) {
+                                        $order = wc_get_order( $oid );
+                                        if ( ! ( $order instanceof \WC_Order ) ) {
+                                                continue;
+                                        }
+
+                                        $order_date = $order->get_date_created();
+                                        $order_ts   = $order_date ? (int) $order_date->getTimestamp() : (int) $order->get_id();
+                                        $status     = $order->get_status();
+                                        $status_h   = function_exists( 'wc_get_order_status_name' ) ? wc_get_order_status_name( $status ) : $status;
+                                        $number     = method_exists( $order, 'get_order_number' ) ? $order->get_order_number() : (string) $order->get_id();
+                                        $customer   = trim( $order->get_formatted_billing_full_name() ?: '' );
+                                        if ( '' === $customer ) {
+                                                $customer = trim( $order->get_formatted_shipping_full_name() ?: '' );
+                                        }
+                                        if ( '' === $customer ) {
+                                                $customer = (string) $order->get_billing_email();
+                                        }
+                                        $order_url = function_exists( 'get_edit_post_link' ) ? get_edit_post_link( $order->get_id(), '' ) : '';
+
+                                        foreach ( $order->get_items( 'line_item' ) as $item ) {
+                                                if ( ! ( $item instanceof \WC_Order_Item_Product ) ) {
+                                                        continue;
+                                                }
+
+                                                $target_id = (int) $item->get_variation_id();
+                                                if ( $target_id <= 0 ) {
+                                                        $target_id = (int) $item->get_product_id();
+                                                }
+                                                if ( $target_id <= 0 || ! lpr_allocator_product_exists( $target_id ) ) {
+                                                        continue;
+                                                }
+
+                                                $desired = lpr_allocator_calc_backorder_desired( $item );
+                                                if ( $desired <= 0 ) {
+                                                        continue;
+                                                }
+
+                                                $allocated     = lpr_allocator_get_item_allocated_active( $item );
+                                                $backordered   = max( 0, $desired - $allocated );
+                                                $qty_ordered   = max( 0, (int) $item->get_quantity() );
+                                                $line_total    = (float) $item->get_total() + (float) $item->get_total_tax();
+                                                $eta_meta_key  = defined( __NAMESPACE__ . '\ORDER_ITEM_META_LINE_ETA' ) ? ORDER_ITEM_META_LINE_ETA : '_lpr_line_eta';
+                                                $line_eta      = (string) $item->get_meta( $eta_meta_key, true );
+                                                $alloc_source  = self::summarize_allocation_source( $item );
+                                                $alloc_status  = ( $allocated >= $desired ) ? __( 'Fully allocated', 'lpr-backorder-allocator' ) : ( $allocated > 0 ? __( 'Partially allocated', 'lpr-backorder-allocator' ) : __( 'Not allocated', 'lpr-backorder-allocator' ) );
+                                                $product_label = $item->get_name();
+
+                                                $rows[] = array(
+                                                        'order_id'         => (int) $order->get_id(),
+                                                        'order_number'     => (string) $number,
+                                                        'order_url'        => (string) $order_url,
+                                                        'order_date_ts'    => $order_ts,
+                                                        'order_date'       => $order_date ? $order_date->date_i18n( 'Y-m-d' ) : '',
+                                                        'status'           => (string) $status_h,
+                                                        'customer'         => $customer,
+                                                        'customer_email'   => (string) $order->get_billing_email(),
+                                                        'currency'         => (string) $order->get_currency(),
+                                                        'item_id'          => (int) $item->get_id(),
+                                                        'product_id'       => $target_id,
+                                                        'product'          => $product_label,
+                                                        'qty_ordered'      => $qty_ordered,
+                                                        'qty_allocated'    => (int) $allocated,
+                                                        'qty_backordered'  => (int) $backordered,
+                                                        'line_value'       => $line_total,
+                                                        'eta'              => $line_eta,
+                                                        'allocation'       => $alloc_source,
+                                                        'allocation_label' => $alloc_status,
+                                                );
+                                        }
+                                }
+
+                                $page++;
+                        } while ( true );
+
+                        usort(
+                                $rows,
+                                static function ( $a, $b ) {
+                                        return ( $a['order_date_ts'] ?? 0 ) <=> ( $b['order_date_ts'] ?? 0 );
+                                }
+                        );
+
+                        return array(
+                                'built_at' => time(),
+                                'rows'     => $rows,
+                        );
+                }
+
+                protected static function summarize_allocation_source( \WC_Order_Item_Product $item ): string {
+                        $key    = defined( __NAMESPACE__ . '\ORDER_ITEM_META_ALLOCATIONS' ) ? ORDER_ITEM_META_ALLOCATIONS : 'lpr_allocations';
+                        $allocs = $item->get_meta( $key, true );
+                        if ( ! is_array( $allocs ) || empty( $allocs ) ) {
+                                return __( 'Not allocated', 'lpr-backorder-allocator' );
+                        }
+
+                        $best = '';
+                        foreach ( $allocs as $row ) {
+                                $status = isset( $row['status'] ) ? sanitize_key( (string) $row['status'] ) : 'reserved';
+                                if ( 'released' === $status ) {
+                                        continue;
+                                }
+
+                                $po_id  = isset( $row['po_id'] ) ? (int) $row['po_id'] : 0;
+                                $eta    = '';
+                                $source = '';
+
+                                if ( $po_id > 0 ) {
+                                        $eta = class_exists( __NAMESPACE__ . '\ETA' ) ? ETA::live_eta_from_po( $po_id, $item ) : '';
+                                        if ( '' === $eta && ! empty( $row['eta'] ) ) {
+                                                $eta = lpr_allocator_sanitize_ymd( (string) $row['eta'] );
+                                        }
+                                        $po_number = (string) get_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_PO_NUMBER' ) ? PO_META_PO_NUMBER : '_lpr_po_number', true );
+                                        if ( '' === $po_number && isset( $row['po_number'] ) ) {
+                                                $po_number = (string) $row['po_number'];
+                                        }
+                                        $source = $po_number ? sprintf( __( 'PO #%s', 'lpr-backorder-allocator' ), $po_number ) : __( 'PO allocation', 'lpr-backorder-allocator' );
+                                } elseif ( ! empty( $row['source'] ) ) {
+                                        $source = (string) $row['source'];
+                                } elseif ( isset( $row['eta'] ) && '' !== $row['eta'] ) {
+                                        $eta = lpr_allocator_sanitize_ymd( (string) $row['eta'] );
+                                }
+
+                                if ( '' === $source ) {
+                                        $source = __( 'Reserved', 'lpr-backorder-allocator' );
+                                }
+
+                                if ( $eta ) {
+                                        $eta_h = lpr_allocator_format_store_date( $eta );
+                                        $text  = sprintf( __( '%1$s – ETA %2$s', 'lpr-backorder-allocator' ), $source, $eta_h );
+                                } else {
+                                        $text = $source;
+                                }
+
+                                if ( '' === $best ) {
+                                        $best = $text;
+                                }
+                        }
+
+                        return $best ?: __( 'Not allocated', 'lpr-backorder-allocator' );
+                }
+        }
+        Backorder_Order_Indexer::init();
+}
+
+/**
+ * Admin page: index-backed overview of orders with backordered lines.
+ */
+if ( ! class_exists( __NAMESPACE__ . '\Backorder_Orders_Page' ) ) {
+        class Backorder_Orders_Page {
+
+                public static function init(): void {
+                        add_action( 'admin_menu', array( __CLASS__, 'register_page' ) );
+                }
+
+                public static function register_page(): void {
+                        add_submenu_page(
+                                'woocommerce',
+                                __( 'Backorder Orders', 'lpr-backorder-allocator' ),
+                                __( 'Backorder Orders', 'lpr-backorder-allocator' ),
+                                'manage_woocommerce',
+                                'lpr-backorder-orders',
+                                array( __CLASS__, 'render' )
+                        );
+                }
+
+                protected static function filter_rows( array $rows, string $view ): array {
+                        if ( 'all' === $view ) {
+                                return $rows;
+                        }
+
+                        $out = array();
+                        foreach ( $rows as $row ) {
+                                $backordered = isset( $row['qty_backordered'] ) ? (int) $row['qty_backordered'] : 0;
+                                if ( $backordered > 0 ) {
+                                        $out[] = $row;
+                                }
+                        }
+                        return $out;
+                }
+
+                protected static function format_money( float $amount, string $currency ): string {
+                        if ( function_exists( 'wc_price' ) ) {
+                                return wc_price( $amount, array( 'currency' => $currency ) );
+                        }
+                        return number_format_i18n( $amount, 2 ) . ' ' . esc_html( $currency );
+                }
+
+                protected static function email_link( array $row ): string {
+                        $email = isset( $row['customer_email'] ) ? sanitize_email( (string) $row['customer_email'] ) : '';
+                        if ( '' === $email ) {
+                                return '<span class="button disabled">' . esc_html__( 'Email unavailable', 'lpr-backorder-allocator' ) . '</span>';
+                        }
+
+                        $eta_text = '';
+                        if ( ! empty( $row['eta'] ) ) {
+                                $eta_text = lpr_allocator_format_store_date( (string) $row['eta'] );
+                        }
+                        $eta_line = $eta_text ? sprintf( __( 'Current ETA: %s', 'lpr-backorder-allocator' ), $eta_text ) : __( 'Current ETA: not set', 'lpr-backorder-allocator' );
+
+                        $body_lines = array(
+                                sprintf( __( 'Hello, here is the latest ETA for your order #%s:', 'lpr-backorder-allocator' ), (string) $row['order_number'] ),
+                                '',
+                                sprintf( __( 'Item: %1$s (Line %2$d)', 'lpr-backorder-allocator' ), (string) $row['product'], (int) $row['item_id'] ),
+                                sprintf( __( 'Ordered: %1$d – Allocated: %2$d – Backordered: %3$d', 'lpr-backorder-allocator' ), (int) $row['qty_ordered'], (int) $row['qty_allocated'], (int) $row['qty_backordered'] ),
+                                $eta_line,
+                        );
+
+                        $mailto = sprintf(
+                                'mailto:%1$s?subject=%2$s&body=%3$s',
+                                rawurlencode( $email ),
+                                rawurlencode( sprintf( __( 'Updated ETAs for order #%s', 'lpr-backorder-allocator' ), (string) $row['order_number'] ) ),
+                                rawurlencode( implode( "\r\n", $body_lines ) )
+                        );
+
+                        return '<a class="button" href="' . esc_url( $mailto ) . '">' . esc_html__( 'Email customer', 'lpr-backorder-allocator' ) . '</a>';
+                }
+
+                public static function render(): void {
+                        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+                                return;
+                        }
+
+                        $view = isset( $_GET['view'] ) ? sanitize_key( wp_unslash( $_GET['view'] ) ) : 'unallocated'; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+                        if ( ! in_array( $view, array( 'unallocated', 'all' ), true ) ) {
+                                $view = 'unallocated';
+                        }
+
+                        $idx       = class_exists( __NAMESPACE__ . '\Backorder_Order_Indexer' ) ? Backorder_Order_Indexer::get_index( false ) : array( 'built_at' => 0, 'rows' => array() );
+                        $built_ts  = isset( $idx['built_at'] ) ? (int) $idx['built_at'] : 0;
+                        $rows_all  = isset( $idx['rows'] ) && is_array( $idx['rows'] ) ? $idx['rows'] : array();
+                        $rows_view = self::filter_rows( $rows_all, $view );
+
+                        $page     = isset( $_GET['paged'] ) ? max( 1, (int) $_GET['paged'] ) : 1; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+                        $per_page = 25;
+                        $total    = count( $rows_view );
+                        $pages    = max( 1, (int) ceil( $total / $per_page ) );
+                        $offset   = ( $page - 1 ) * $per_page;
+                        $subset   = array_slice( $rows_view, $offset, $per_page );
+
+                        $rebuild_url = wp_nonce_url(
+                                add_query_arg(
+                                        array(
+                                                'action'   => 'lpr_build_order_backorder_index',
+                                                'redirect' => rawurlencode( admin_url( 'admin.php?page=lpr-backorder-orders&view=' . $view . '&paged=' . $page ) ),
+                                        ),
+                                        admin_url( 'admin-post.php' )
+                                ),
+                                'lpr_build_order_backorder_index'
+                        );
+
+                        if ( isset( $_GET['lpr_order_index'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+                                $state = sanitize_key( wp_unslash( $_GET['lpr_order_index'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+                                if ( 'queued' === $state ) {
+                                        echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__( 'Order backorder index rebuild queued.', 'lpr-backorder-allocator' ) . '</p></div>';
+                                }
+                        }
+
+                        ?>
+                        <div class="wrap">
+                                <h1><?php echo esc_html__( 'Orders with Backordered Lines', 'lpr-backorder-allocator' ); ?></h1>
+
+                                <form method="get" style="margin:16px 0;">
+                                        <input type="hidden" name="page" value="lpr-backorder-orders" />
+                                        <label for="lpr-order-view"><strong><?php echo esc_html__( 'View', 'lpr-backorder-allocator' ); ?>:</strong></label>
+                                        <select name="view" id="lpr-order-view">
+                                                <option value="unallocated" <?php selected( $view, 'unallocated' ); ?>><?php echo esc_html__( 'Not fully allocated', 'lpr-backorder-allocator' ); ?></option>
+                                                <option value="all" <?php selected( $view, 'all' ); ?>><?php echo esc_html__( 'All backordered lines', 'lpr-backorder-allocator' ); ?></option>
+                                        </select>
+                                        <noscript><button class="button"><?php esc_html_e( 'Apply', 'lpr-backorder-allocator' ); ?></button></noscript>
+                                </form>
+
+                                <p>
+                                        <a class="button" href="<?php echo esc_url( $rebuild_url ); ?>"><?php echo esc_html__( 'Rebuild Index', 'lpr-backorder-allocator' ); ?></a>
+                                        <span class="description" style="margin-left:8px;">
+                                                <?php
+                                                printf(
+                                                        /* translators: %s: timestamp */
+                                                        esc_html__( 'Last built: %s', 'lpr-backorder-allocator' ),
+                                                        $built_ts ? esc_html( wp_date( 'Y-m-d H:i:s', $built_ts ) ) : esc_html__( 'never', 'lpr-backorder-allocator' )
+                                                );
+                                                ?>
+                                        </span>
+                                </p>
+
+                                <table class="widefat striped">
+                                        <thead>
+                                                <tr>
+                                                        <th><?php echo esc_html__( 'Order', 'lpr-backorder-allocator' ); ?></th>
+                                                        <th><?php echo esc_html__( 'Date', 'lpr-backorder-allocator' ); ?></th>
+                                                        <th><?php echo esc_html__( 'Status', 'lpr-backorder-allocator' ); ?></th>
+                                                        <th><?php echo esc_html__( 'Customer', 'lpr-backorder-allocator' ); ?></th>
+                                                        <th><?php echo esc_html__( 'Line ID', 'lpr-backorder-allocator' ); ?></th>
+                                                        <th><?php echo esc_html__( 'Product', 'lpr-backorder-allocator' ); ?></th>
+                                                        <th class="num"><?php echo esc_html__( 'Ordered', 'lpr-backorder-allocator' ); ?></th>
+                                                        <th class="num"><?php echo esc_html__( 'Allocated', 'lpr-backorder-allocator' ); ?></th>
+                                                        <th class="num"><?php echo esc_html__( 'Backordered', 'lpr-backorder-allocator' ); ?></th>
+                                                        <th class="num"><?php echo esc_html__( 'Line Value', 'lpr-backorder-allocator' ); ?></th>
+                                                        <th><?php echo esc_html__( 'Line ETA', 'lpr-backorder-allocator' ); ?></th>
+                                                        <th><?php echo esc_html__( 'Allocation Source', 'lpr-backorder-allocator' ); ?></th>
+                                                        <th><?php echo esc_html__( 'Allocation Status', 'lpr-backorder-allocator' ); ?></th>
+                                                        <th><?php echo esc_html__( 'Customer Communication', 'lpr-backorder-allocator' ); ?></th>
+                                                </tr>
+                                        </thead>
+                                        <tbody>
+                                                <?php if ( empty( $subset ) ) : ?>
+                                                        <tr><td colspan="14"><?php echo esc_html__( 'No backordered order lines found for this view.', 'lpr-backorder-allocator' ); ?></td></tr>
+                                                <?php else : ?>
+                                                        <?php foreach ( $subset as $row ) : ?>
+                                                                <?php
+                                                                $order_link = ! empty( $row['order_url'] ) ? '<a href="' . esc_url( $row['order_url'] ) . '">#' . esc_html( $row['order_number'] ) . '</a>' : '#' . esc_html( $row['order_number'] );
+                                                                $eta        = ! empty( $row['eta'] ) ? lpr_allocator_format_store_date( (string) $row['eta'] ) : '';
+                                                                ?>
+                                                                <tr>
+                                                                        <td><?php echo wp_kses_post( $order_link ); ?></td>
+                                                                        <td><?php echo esc_html( $row['order_date'] ); ?></td>
+                                                                        <td><?php echo esc_html( $row['status'] ); ?></td>
+                                                                        <td><?php echo esc_html( $row['customer'] ); ?></td>
+                                                                        <td><?php echo esc_html( (string) $row['item_id'] ); ?></td>
+                                                                        <td><?php echo esc_html( $row['product'] ); ?></td>
+                                                                        <td class="num"><?php echo esc_html( (string) $row['qty_ordered'] ); ?></td>
+                                                                        <td class="num"><?php echo esc_html( (string) $row['qty_allocated'] ); ?></td>
+                                                                        <td class="num"><?php echo esc_html( (string) $row['qty_backordered'] ); ?></td>
+                                                                        <td class="num"><?php echo wp_kses_post( self::format_money( (float) $row['line_value'], (string) $row['currency'] ) ); ?></td>
+                                                                        <td><?php echo $eta ? esc_html( $eta ) : '&#8211;'; ?></td>
+                                                                        <td><?php echo esc_html( (string) $row['allocation'] ); ?></td>
+                                                                        <td><?php echo esc_html( (string) $row['allocation_label'] ); ?></td>
+                                                                        <td><?php echo wp_kses_post( self::email_link( $row ) ); ?></td>
+                                                                </tr>
+                                                        <?php endforeach; ?>
+                                                <?php endif; ?>
+                                        </tbody>
+                                </table>
+
+                                <?php if ( $pages > 1 ) : ?>
+                                        <div class="tablenav-pages">
+                                                <span class="displaying-num"><?php echo esc_html( sprintf( _n( '%s item', '%s items', $total, 'lpr-backorder-allocator' ), number_format_i18n( $total ) ) ); ?></span>
+                                                <span class="pagination-links">
+                                                        <?php
+                                                        $base_url = admin_url( 'admin.php?page=lpr-backorder-orders&view=' . $view . '&paged=%#%' );
+                                                        echo wp_kses_post(
+                                                                paginate_links(
+                                                                        array(
+                                                                                'base'      => $base_url,
+                                                                                'format'    => '',
+                                                                                'current'   => $page,
+                                                                                'total'     => $pages,
+                                                                                'prev_text' => __( '&laquo;', 'lpr-backorder-allocator' ),
+                                                                                'next_text' => __( '&raquo;', 'lpr-backorder-allocator' ),
+                                                                        )
+                                                                )
+                                                        );
+                                                        ?>
+                                                </span>
+                                        </div>
+                                <?php endif; ?>
+                        </div>
+                        <?php
+                }
+        }
+        Backorder_Orders_Page::init();
+}
+
+/**
  * Admin product UI: show incoming PO availability beneath Quantity.
  */
 if ( ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Product_UI' ) ) {
