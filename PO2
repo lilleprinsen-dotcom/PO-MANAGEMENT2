@@ -627,13 +627,6 @@ if ( ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Storefront' ) ) {
                  */
                 private static $bootstrapped = false;
 
-                /**
-                 * Cached notice strings per product ID.
-                 *
-                 * @var array<int,string>
-                 */
-                private static $notice_cache = array();
-
                 public static function init(): void {
                         if ( self::$bootstrapped ) {
                                 return;
@@ -648,10 +641,6 @@ if ( ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Storefront' ) ) {
                         // Ensure we do not enqueue the filter multiple times if init runs twice.
                         if ( ! has_filter( 'woocommerce_get_availability_text', array( __CLASS__, 'append_incoming_notice' ) ) ) {
                                 add_filter( 'woocommerce_get_availability_text', array( __CLASS__, 'append_incoming_notice' ), 25, 2 );
-                        }
-
-                        if ( ! has_filter( 'woocommerce_get_item_data', array( __CLASS__, 'add_cart_item_notice' ) ) ) {
-                                add_filter( 'woocommerce_get_item_data', array( __CLASS__, 'add_cart_item_notice' ), 15, 2 );
                         }
                 }
 
@@ -685,75 +674,22 @@ if ( ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Storefront' ) ) {
                                 return $text;
                         }
 
-                        $notice = self::get_notice_for_product( $product );
-                        if ( '' === $notice ) {
+                        if ( ! $product instanceof \WC_Product ) {
                                 return $text;
-                        }
-
-                        return $text ? trim( $text . ' ' . $notice ) : $notice;
-                }
-
-                /**
-                 * Append incoming notice to cart/checkout line items.
-                 *
-                 * @param array $item_data Item data currently rendered.
-                 * @param array $cart_item Cart item array.
-                 * @return array
-                 */
-                public static function add_cart_item_notice( array $item_data, array $cart_item ): array {
-                        if ( ! self::is_enabled() ) {
-                                return $item_data;
-                        }
-
-                        $product = $cart_item['data'] ?? null;
-                        $notice  = self::get_notice_for_product( $product );
-
-                        if ( '' === $notice ) {
-                                return $item_data;
-                        }
-
-                        $item_data[] = array(
-                                'name'    => __( 'Incoming stock', 'lpr-backorder-allocator' ),
-                                'value'   => esc_html( $notice ),
-                                'display' => '<span class="lpr-front-notice">' . esc_html( $notice ) . '</span>',
-                        );
-
-                        return $item_data;
-                }
-
-                /**
-                 * Build and cache the incoming notice string for a product.
-                 *
-                 * @param \WC_Product|int|null $product Product or ID.
-                 * @return string
-                 */
-                protected static function get_notice_for_product( $product ): string {
-                        if ( ! $product instanceof \WC_Product ) {
-                                $product_id = (int) $product;
-                                $product    = $product_id > 0 ? wc_get_product( $product_id ) : null;
-                        }
-
-                        if ( ! $product instanceof \WC_Product ) {
-                                return '';
                         }
 
                         $product_id = (int) $product->get_id();
                         if ( $product_id <= 0 ) {
-                                return '';
-                        }
-
-                        if ( isset( self::$notice_cache[ $product_id ] ) ) {
-                                return self::$notice_cache[ $product_id ];
+                                return $text;
                         }
 
                         $qty = (int) get_post_meta( $product_id, defined( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_QTY' ) ? PRODUCT_META_NEXT_EXTRA_QTY : '_lpr_next_extra_qty', true );
                         if ( $qty <= 0 ) {
-                                self::$notice_cache[ $product_id ] = '';
-                                return '';
+                                return $text;
                         }
 
-                        $eta_raw  = (string) get_post_meta( $product_id, defined( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_ETA' ) ? PRODUCT_META_NEXT_EXTRA_ETA : '_lpr_next_extra_eta', true );
-                        $eta_text = $eta_raw ? lpr_allocator_format_store_date( $eta_raw ) : __( 'No ETA set', 'lpr-backorder-allocator' );
+                        $eta      = (string) get_post_meta( $product_id, defined( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_ETA' ) ? PRODUCT_META_NEXT_EXTRA_ETA : '_lpr_next_extra_eta', true );
+                        $eta_text = $eta ? $eta : __( 'No ETA set', 'lpr-backorder-allocator' );
 
                         $notice = sprintf(
                                 /* translators: 1: quantity, 2: ETA date */
@@ -762,9 +698,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Storefront' ) ) {
                                 $eta_text
                         );
 
-                        self::$notice_cache[ $product_id ] = $notice;
-
-                        return $notice;
+                        return $text ? trim( $text . ' ' . $notice ) : $notice;
                 }
         }
         Incoming_Stock_Storefront::init();
