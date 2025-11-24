@@ -748,6 +748,23 @@ if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_format_store_date' ) ) {
         }
 }
 
+if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_touch_allocation_status' ) ) {
+        /**
+         * Update an allocation row status and stamp the change time.
+         *
+         * @param array  $row    Allocation row (passed by reference).
+         * @param string $status New status label.
+         * @return void
+         */
+        function lpr_allocator_touch_allocation_status( array &$row, string $status ): void {
+                $row['status']            = $status;
+                $row['status_changed_at'] = current_time( 'mysql' );
+                if ( 'reserved' === $status && empty( $row['allocated_at'] ) ) {
+                        $row['allocated_at'] = $row['status_changed_at'];
+                }
+        }
+}
+
 if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_product_exists' ) ) {
         /**
          * Validate a product or variation ID via Woo CRUD (HPOS-safe).
@@ -2026,13 +2043,21 @@ if ( ! class_exists( __NAMESPACE__ . '\Order_Allocations_Metabox' ) ) {
 						if ( '' === $eta_row && $po_id ) {
 							$eta_row = lpr_allocator_sanitize_ymd( (string) get_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_ETA_DATE' ) ? PO_META_ETA_DATE : '_lpr_eta_date', true ) );
 						}
-						$status    = isset( $row['status'] ) ? sanitize_key( (string) $row['status'] ) : 'reserved';
+                                                $status       = isset( $row['status'] ) ? sanitize_key( (string) $row['status'] ) : 'reserved';
+                                                $status_time  = isset( $row['status_changed_at'] ) ? (string) $row['status_changed_at'] : '';
+                                                if ( ! $status_time && isset( $row['allocated_at'] ) && 'reserved' === $status ) {
+                                                        $status_time = (string) $row['allocated_at'];
+                                                }
+                                                $status_label = $status;
+                                                if ( $status_time ) {
+                                                        $status_label .= ' — ' . lpr_allocator_format_store_date( $status_time, true );
+                                                }
 
-						echo '<tr>';
-						echo '<td>' . esc_html( $po_number ) . '</td>';
-						echo '<td>' . esc_html( (string) $alloc_q ) . '</td>';
+                                                echo '<tr>';
+                                                echo '<td>' . esc_html( $po_number ) . '</td>';
+                                                echo '<td>' . esc_html( (string) $alloc_q ) . '</td>';
                                                 echo '<td>' . esc_html( lpr_allocator_format_store_date( $eta_row ) ) . '</td>';
-						echo '<td>' . esc_html( $status ) . '</td>';
+                                                echo '<td>' . esc_html( $status_label ) . '</td>';
 						echo '</tr>';
 					}
 
@@ -2632,13 +2657,16 @@ if ( ! class_exists( __NAMESPACE__ . '\Order_VIP_Prioritizer' ) ) {
                                         continue;
                                 }
 
+                                $timestamp = current_time( 'mysql' );
+
                                 $row = array(
                                         'po_id'         => $po_id,
                                         'po_number'     => isset( $add['po_number'] ) ? (string) $add['po_number'] : '',
                                         'qty_allocated' => (int) $qty_add,
                                         'eta'           => isset( $add['eta'] ) ? (string) $add['eta'] : '',
                                         'status'        => 'reserved',
-                                        'allocated_at'  => current_time( 'mysql' ),
+                                        'status_changed_at' => $timestamp,
+                                        'allocated_at'  => $timestamp,
                                 );
 
                                 $allocs[] = $row;
@@ -2709,8 +2737,8 @@ if ( ! class_exists( __NAMESPACE__ . '\Order_VIP_Prioritizer' ) ) {
                                         continue;
                                 }
                                 if ( $qty >= $row_qty ) {
-                                        $row['status'] = 'released';
-                                        $qty          -= $row_qty;
+                                        lpr_allocator_touch_allocation_status( $row, 'released' );
+                                        $qty -= $row_qty;
                                 } else {
                                         $row['qty_allocated'] = $row_qty - $qty;
                                         $qty                  = 0;
@@ -2748,8 +2776,8 @@ if ( ! class_exists( __NAMESPACE__ . '\Order_VIP_Prioritizer' ) ) {
                                         continue;
                                 }
                                 if ( $qty >= $row_qty ) {
-                                        $row['status'] = 'released';
-                                        $qty          -= $row_qty;
+                                        lpr_allocator_touch_allocation_status( $row, 'released' );
+                                        $qty -= $row_qty;
                                 } else {
                                         $row['qty_allocated'] = $row_qty - $qty;
                                         $qty                  = 0;
@@ -2771,13 +2799,16 @@ if ( ! class_exists( __NAMESPACE__ . '\Order_VIP_Prioritizer' ) ) {
                                 $allocs = array();
                         }
 
+                        $timestamp = current_time( 'mysql' );
+
                         $allocs[] = array(
                                 'po_id'         => $po_id,
                                 'po_number'     => $po_number,
                                 'qty_allocated' => (int) $qty,
                                 'eta'           => $eta,
                                 'status'        => 'reserved',
-                                'allocated_at'  => current_time( 'mysql' ),
+                                'status_changed_at' => $timestamp,
+                                'allocated_at'  => $timestamp,
                         );
 
                         $item->update_meta_data( $meta_key, $allocs );
@@ -4007,9 +4038,10 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                                         'po_number'     => $po_number,
                                         'qty_allocated' => (int) $allocate_now,
                                         'eta'           => $eta_to_store,
-					'status'        => 'reserved',
-					'allocated_at'  => $today_dt,
-				);
+                                        'status'        => 'reserved',
+                                        'status_changed_at' => $today_dt,
+                                        'allocated_at'  => $today_dt,
+                                );
                                 $target_item->update_meta_data( $meta_key_allocs, $allocs );
                                 $target_item->save();
 
@@ -4654,8 +4686,8 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                                 }
 
                                 if ( $remaining_to_move >= $row_qty ) {
-                                        $allocs[ $idx ]['status'] = 'released';
-                                        $remaining_to_move       -= $row_qty;
+                                        lpr_allocator_touch_allocation_status( $allocs[ $idx ], 'released' );
+                                        $remaining_to_move -= $row_qty;
                                 } else {
                                         $allocs[ $idx ]['qty_allocated'] = $row_qty - $remaining_to_move;
                                         $remaining_to_move               = 0;
@@ -4667,13 +4699,16 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                                 return 0;
                         }
 
+                        $timestamp = current_time( 'mysql' );
+
                         $allocs[] = array(
                                 'po_id'         => $po_id,
                                 'po_number'     => $po_number,
                                 'qty_allocated' => (int) $moved_qty,
                                 'eta'           => $eta_to_store,
                                 'status'        => 'reserved',
-                                'allocated_at'  => current_time( 'mysql' ),
+                                'status_changed_at' => $timestamp,
+                                'allocated_at'  => $timestamp,
                         );
 
                         $item->update_meta_data( $meta_key_allocs, $allocs );
@@ -4738,8 +4773,8 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                                 }
 
                                 if ( $remaining_to_move >= $row_qty ) {
-                                        $allocs[ $idx ]['status'] = 'released';
-                                        $remaining_to_move       -= $row_qty;
+                                        lpr_allocator_touch_allocation_status( $allocs[ $idx ], 'released' );
+                                        $remaining_to_move -= $row_qty;
                                 } else {
                                         $allocs[ $idx ]['qty_allocated'] = $row_qty - $remaining_to_move;
                                         $remaining_to_move               = 0;
@@ -4751,13 +4786,16 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                                 return 0;
                         }
 
+                        $timestamp = current_time( 'mysql' );
+
                         $allocs[] = array(
                                 'po_id'         => $po_id,
                                 'po_number'     => $po_number,
                                 'qty_allocated' => (int) $moved_qty,
                                 'eta'           => $eta_to_store,
                                 'status'        => 'reserved',
-                                'allocated_at'  => current_time( 'mysql' ),
+                                'status_changed_at' => $timestamp,
+                                'allocated_at'  => $timestamp,
                         );
 
                         $item->update_meta_data( $meta_key_allocs, $allocs );
@@ -5536,7 +5574,7 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_Allocation_Overage_Checker' ) ) {
 
                                         $release = min( $row_qty, $over );
                                         if ( $release >= $row_qty ) {
-                                                $items[ $key ]['allocs'][ $idx ]['status'] = 'released';
+                                                lpr_allocator_touch_allocation_status( $items[ $key ]['allocs'][ $idx ], 'released' );
                                         } else {
                                                 $items[ $key ]['allocs'][ $idx ]['qty_allocated'] = $row_qty - $release;
                                         }
