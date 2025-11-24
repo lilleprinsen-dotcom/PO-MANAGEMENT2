@@ -45,6 +45,21 @@ if ( ! defined( __NAMESPACE__ . '\PRODUCT_META_INCOMING_DETAILS' ) ) {
         define( __NAMESPACE__ . '\PRODUCT_META_INCOMING_DETAILS', '_lpr_incoming_po_details' );
 }
 
+if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_frontend_incoming_enabled' ) ) {
+        /**
+         * Toggle for storefront incoming PO notices.
+         */
+        function lpr_allocator_frontend_incoming_enabled(): bool {
+                if ( ! class_exists( __NAMESPACE__ . '\Settings' ) ) {
+                        return false;
+                }
+
+                $settings = Settings::get();
+
+                return ! empty( $settings['frontend_extra_pool'] );
+        }
+}
+
 if ( ! class_exists( __NAMESPACE__ . '\Settings' ) ) {
 	/**
 	 * Settings storage & helpers.
@@ -257,8 +272,8 @@ if ( ! class_exists( __NAMESPACE__ . '\Admin_Settings_Tab' ) ) {
 				),
 
                                 array(
-                                        'title'   => __( 'Show available PO stock on frontend', 'lpr-backorder-allocator' ),
-                                        'desc'    => __( 'Writes precomputed product meta only; no frontend logic runs.', 'lpr-backorder-allocator' ),
+                                        'title'   => __( 'Show incoming PO availability on storefront', 'lpr-backorder-allocator' ),
+                                        'desc'    => __( 'Append incoming purchase order quantities/ETA to product availability text on the frontend.', 'lpr-backorder-allocator' ),
                                         'id'      => 'lpr_allocator_frontend_extra_pool',
                                         'type'    => 'checkbox',
                                         'default' => 'no',
@@ -585,25 +600,27 @@ if ( ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Storefront' ) ) {
         class Incoming_Stock_Storefront {
 
                 public static function init(): void {
+                        if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_frontend_incoming_enabled' ) || ! lpr_allocator_frontend_incoming_enabled() ) {
+                                return;
+                        }
+
                         add_filter( 'woocommerce_get_availability_text', array( __CLASS__, 'append_incoming_notice' ), 25, 2 );
                 }
 
                 /**
                  * Whether storefront notices should be active.
                  */
-                protected static function is_enabled(): bool {
-                        if ( is_admin() && ! wp_doing_ajax() ) {
-                                return false;
-                        }
-
-                        if ( ! class_exists( __NAMESPACE__ . '\Settings' ) ) {
-                                return false;
-                        }
-
-                        $settings = Settings::get();
-
-                        return ! empty( $settings['frontend_extra_pool'] );
+        protected static function is_enabled(): bool {
+                if ( is_admin() && ! wp_doing_ajax() ) {
+                        return false;
                 }
+
+                if ( function_exists( __NAMESPACE__ . '\lpr_allocator_frontend_incoming_enabled' ) ) {
+                        return lpr_allocator_frontend_incoming_enabled();
+                }
+
+                return false;
+        }
 
                 /**
                  * Append incoming PO availability to the stock availability message.
