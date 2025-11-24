@@ -578,8 +578,76 @@ if ( ! class_exists( __NAMESPACE__ . '\Email_Notification_Preview' ) ) {
 */
 namespace LPR\Allocator;
 
+if ( ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Storefront' ) ) {
+        /**
+         * Surface incoming PO availability on the storefront availability text.
+         */
+        class Incoming_Stock_Storefront {
+
+                public static function init(): void {
+                        add_filter( 'woocommerce_get_availability_text', array( __CLASS__, 'append_incoming_notice' ), 25, 2 );
+                }
+
+                /**
+                 * Whether storefront notices should be active.
+                 */
+                protected static function is_enabled(): bool {
+                        if ( is_admin() && ! wp_doing_ajax() ) {
+                                return false;
+                        }
+
+                        if ( ! class_exists( __NAMESPACE__ . '\Settings' ) ) {
+                                return false;
+                        }
+
+                        $settings = Settings::get();
+
+                        return ! empty( $settings['frontend_extra_pool'] );
+                }
+
+                /**
+                 * Append incoming PO availability to the stock availability message.
+                 *
+                 * @param string      $text     Existing availability text.
+                 * @param \WC_Product $product  Product instance.
+                 */
+                public static function append_incoming_notice( string $text, $product ): string {
+                        if ( ! self::is_enabled() ) {
+                                return $text;
+                        }
+
+                        if ( ! $product instanceof \WC_Product ) {
+                                return $text;
+                        }
+
+                        $product_id = (int) $product->get_id();
+                        if ( $product_id <= 0 ) {
+                                return $text;
+                        }
+
+                        $qty = (int) get_post_meta( $product_id, defined( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_QTY' ) ? PRODUCT_META_NEXT_EXTRA_QTY : '_lpr_next_extra_qty', true );
+                        if ( $qty <= 0 ) {
+                                return $text;
+                        }
+
+                        $eta      = (string) get_post_meta( $product_id, defined( __NAMESPACE__ . '\PRODUCT_META_NEXT_EXTRA_ETA' ) ? PRODUCT_META_NEXT_EXTRA_ETA : '_lpr_next_extra_eta', true );
+                        $eta_text = $eta ? $eta : __( 'No ETA set', 'lpr-backorder-allocator' );
+
+                        $notice = sprintf(
+                                /* translators: 1: quantity, 2: ETA date */
+                                _n( '%1$d unit expected (ETA %2$s)', '%1$d units expected (ETA %2$s)', $qty, 'lpr-backorder-allocator' ),
+                                $qty,
+                                $eta_text
+                        );
+
+                        return $text ? trim( $text . ' ' . $notice ) : $notice;
+                }
+        }
+        Incoming_Stock_Storefront::init();
+}
+
 if ( ! is_admin() && ! wp_doing_cron() ) {
-	return;
+        return;
 }
 
 /**
