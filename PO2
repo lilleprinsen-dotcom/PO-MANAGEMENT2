@@ -6963,6 +6963,94 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_Allocation_Overage_Checker' ) ) {
         }
 }
 
+/**
+ * Periodic guardrail to drop allocations pointing at deleted or non-live POs.
+ */
+if ( ! class_exists( __NAMESPACE__ . '\PO_Allocation_Integrity_Checker' ) ) {
+        class PO_Allocation_Integrity_Checker {
+
+                /**
+                 * Entry point (used by other scheduled jobs).
+                 */
+                public static function run(): void {
+                        if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_remove_po_allocations_from_orders' ) ) {
+                                return;
+                        }
+
+                        $po_ids = self::find_po_ids_from_allocations();
+                        if ( empty( $po_ids ) ) {
+                                return;
+                        }
+
+                        $expected_type = defined( __NAMESPACE__ . '\CPT_SUPPLIER_PO' ) ? CPT_SUPPLIER_PO : 'supplier_po';
+                        $live_statuses = lpr_allocator_live_po_statuses();
+
+                        foreach ( $po_ids as $po_id ) {
+                                if ( ! self::po_is_live( $po_id, $expected_type, $live_statuses ) ) {
+                                        lpr_allocator_remove_po_allocations_from_orders( (int) $po_id );
+                                }
+                        }
+                }
+
+                /**
+                 * Gather PO IDs referenced inside order item allocations.
+                 */
+                protected static function find_po_ids_from_allocations(): array {
+                        global $wpdb;
+
+                        if ( ! ( $wpdb instanceof \wpdb ) ) {
+                                return array();
+                        }
+
+                        $meta_table  = $wpdb->prefix . 'woocommerce_order_itemmeta';
+                        $items_table = $wpdb->prefix . 'woocommerce_order_items';
+
+                        $sql  = $wpdb->prepare(
+                                "SELECT im.meta_value\n"
+                                . "FROM {$items_table} oi\n"
+                                . "INNER JOIN {$meta_table} im ON oi.order_item_id = im.order_item_id\n"
+                                . "WHERE im.meta_key = %s",
+                                ORDER_ITEM_META_ALLOCATIONS
+                        );
+                        $rows = $wpdb->get_col( $sql );
+
+                        if ( empty( $rows ) ) {
+                                return array();
+                        }
+
+                        $po_ids = array();
+                        foreach ( $rows as $meta_val ) {
+                                $allocs = maybe_unserialize( $meta_val );
+                                if ( ! is_array( $allocs ) ) {
+                                        continue;
+                                }
+
+                                foreach ( $allocs as $alloc_row ) {
+                                        $po_id = isset( $alloc_row['po_id'] ) ? absint( $alloc_row['po_id'] ) : 0;
+                                        if ( $po_id > 0 ) {
+                                                $po_ids[ $po_id ] = true;
+                                        }
+                                }
+                        }
+
+                        return array_keys( $po_ids );
+                }
+
+                /**
+                 * Check if the PO exists and remains in a live status.
+                 */
+                protected static function po_is_live( int $po_id, string $expected_type, array $live_statuses ): bool {
+                        $po = get_post( $po_id );
+
+                        if ( ! ( $po instanceof \WP_Post ) || $po->post_type !== $expected_type ) {
+                                return false;
+                        }
+
+                        return in_array( $po->post_status, $live_statuses, true );
+                }
+        }
+}
+
 if ( ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Indexer' ) ) {
         class Incoming_Stock_Indexer {
 
@@ -7030,6 +7118,10 @@ if ( ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Indexer' ) ) {
 
                         if ( class_exists( __NAMESPACE__ . '\PO_Allocation_Overage_Checker' ) ) {
                                 PO_Allocation_Overage_Checker::run();
+                        }
+
+                        if ( class_exists( __NAMESPACE__ . '\PO_Allocation_Integrity_Checker' ) ) {
+                                PO_Allocation_Integrity_Checker::run();
                         }
 
                         // Fallback when AS is unavailable: keep chaining single events.
