@@ -8384,6 +8384,252 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Orders_Page' ) ) {
 }
 
 /**
+ * Admin page: incoming supplier POs grouped by ETA (line-level when provided).
+ */
+if ( ! class_exists( __NAMESPACE__ . '\Incoming_Purchase_Orders_Page' ) ) {
+        class Incoming_Purchase_Orders_Page {
+
+                public static function init(): void {
+                        add_action( 'admin_menu', array( __CLASS__, 'register_page' ) );
+                }
+
+                public static function register_page(): void {
+                        add_submenu_page(
+                                ADMIN_MENU_SLUG,
+                                __( 'Incoming POs', 'lpr-backorder-allocator' ),
+                                __( 'Incoming POs', 'lpr-backorder-allocator' ),
+                                'manage_woocommerce',
+                                'lpr-incoming-pos',
+                                array( __CLASS__, 'render' )
+                        );
+                }
+
+                protected static function collect_rows(): array {
+                        $entries      = array();
+                        $live_status  = lpr_allocator_live_po_statuses();
+                        $po_post_type = defined( __NAMESPACE__ . '\CPT_SUPPLIER_PO' ) ? CPT_SUPPLIER_PO : 'supplier_po';
+
+                        $query = new \WP_Query(
+                                array(
+                                        'post_type'      => $po_post_type,
+                                        'post_status'    => $live_status,
+                                        'posts_per_page' => -1,
+                                        'fields'         => 'ids',
+                                        'no_found_rows'  => true,
+                                )
+                        );
+
+                        foreach ( $query->posts as $po_id ) {
+                                $po_id   = (int) $po_id;
+                                $lines   = get_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_LINES' ) ? PO_META_LINES : '_lpr_po_lines', true );
+                                $po_eta  = lpr_allocator_sanitize_ymd( (string) get_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_ETA_DATE' ) ? PO_META_ETA_DATE : '_lpr_eta_date', true ) );
+                                $number  = (string) get_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_PO_NUMBER' ) ? PO_META_PO_NUMBER : '_lpr_po_number', true );
+                                $supplier = (string) get_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_SUPPLIER_NAME' ) ? PO_META_SUPPLIER_NAME : '_lpr_supplier_name', true );
+                                $status  = get_post_status( $po_id );
+                                $status_obj = $status ? get_post_status_object( $status ) : null;
+                                $status_label = $status_obj && isset( $status_obj->label ) ? (string) $status_obj->label : (string) $status;
+                                $po_link = get_edit_post_link( $po_id, 'url' );
+
+                                if ( ! is_array( $lines ) || empty( $lines ) ) {
+                                        continue;
+                                }
+
+                                foreach ( $lines as $line ) {
+                                        $qty_ordered   = isset( $line['qty_ordered'] ) ? max( 0, (int) $line['qty_ordered'] ) : 0;
+                                        $qty_allocated = isset( $line['qty_allocated'] ) ? max( 0, (int) $line['qty_allocated'] ) : 0;
+                                        $qty_received  = isset( $line['qty_received'] ) ? max( 0, (int) $line['qty_received'] ) : 0;
+
+                                        if ( $qty_ordered <= 0 ) {
+                                                continue;
+                                        }
+
+                                        $target_id = isset( $line['variation_id'] ) && (int) $line['variation_id'] > 0 ? (int) $line['variation_id'] : (int) ( $line['product_id'] ?? 0 );
+                                        if ( $target_id <= 0 || ! lpr_allocator_product_exists( $target_id ) ) {
+                                                continue;
+                                        }
+
+                                        $eta = lpr_allocator_sanitize_ymd( isset( $line['eta_override'] ) ? (string) $line['eta_override'] : '' );
+                                        if ( '' === $eta ) {
+                                                $eta = $po_eta;
+                                        }
+
+                                        $key = $po_id . '|' . ( $eta ? $eta : 'no-eta' );
+                                        if ( ! isset( $entries[ $key ] ) ) {
+                                                $entries[ $key ] = array(
+                                                        'po_id'        => $po_id,
+                                                        'po_number'    => $number ?: (string) $po_id,
+                                                        'po_url'       => $po_link,
+                                                        'supplier'     => $supplier,
+                                                        'eta'          => $eta,
+                                                        'status'       => $status_label,
+                                                        'status_slug'  => $status,
+                                                        'lines'        => array(),
+                                                        'totals'       => array(
+                                                                'ordered'   => 0,
+                                                                'allocated' => 0,
+                                                                'received'  => 0,
+                                                                'free'      => 0,
+                                                        ),
+                                                );
+                                        }
+
+                                        $free = max( 0, $qty_ordered - $qty_allocated - $qty_received );
+
+                                        $entries[ $key ]['lines'][] = array(
+                                                'product_id'    => $target_id,
+                                                'product_label' => lpr_allocator_product_option_label( $target_id ),
+                                                'ordered'       => $qty_ordered,
+                                                'allocated'     => $qty_allocated,
+                                                'received'      => $qty_received,
+                                                'free'          => $free,
+                                        );
+
+                                        $entries[ $key ]['totals']['ordered']   += $qty_ordered;
+                                        $entries[ $key ]['totals']['allocated'] += $qty_allocated;
+                                        $entries[ $key ]['totals']['received']  += $qty_received;
+                                        $entries[ $key ]['totals']['free']      += $free;
+                                }
+                        }
+
+                        // Normalize into a list and sort by ETA earliest -> latest, then PO ID.
+                        $rows = array_values( $entries );
+                        usort(
+                                $rows,
+                                static function ( $a, $b ) {
+                                        $ea = $a['eta'] ?? '';
+                                        $eb = $b['eta'] ?? '';
+                                        if ( $ea === $eb ) {
+                                                return ( $a['po_id'] ?? 0 ) <=> ( $b['po_id'] ?? 0 );
+                                        }
+                                        if ( '' === $ea ) {
+                                                return 1;
+                                        }
+                                        if ( '' === $eb ) {
+                                                return -1;
+                                        }
+                                        return lpr_allocator_compare_dates( (string) $ea, (string) $eb );
+                                }
+                        );
+
+                        return $rows;
+                }
+
+                public static function render(): void {
+                        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+                                return;
+                        }
+
+                        $rows = self::collect_rows();
+                        ?>
+                        <div class="wrap">
+                                <h1><?php echo esc_html__( 'Incoming Purchase Orders', 'lpr-backorder-allocator' ); ?></h1>
+                                <p class="description"><?php echo esc_html__( 'Open supplier POs grouped by ETA. Line-level ETAs split a PO into multiple arrivals when needed.', 'lpr-backorder-allocator' ); ?></p>
+
+                                <?php if ( empty( $rows ) ) : ?>
+                                        <div class="notice notice-info"><p><?php echo esc_html__( 'No incoming purchase orders in open or partial status.', 'lpr-backorder-allocator' ); ?></p></div>
+                                <?php else : ?>
+                                        <style>
+                                                .lpr-incoming-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:16px; }
+                                                .lpr-incoming-card { background:#fff; border:1px solid #dcdcde; box-shadow:0 1px 1px rgba(0,0,0,0.04); border-radius:4px; overflow:hidden; }
+                                                .lpr-incoming-card__header { display:flex; justify-content:space-between; align-items:flex-start; padding:12px 16px; background:#f6f7f7; border-bottom:1px solid #dcdcde; }
+                                                .lpr-incoming-card__title { font-size:15px; font-weight:600; margin:0 0 4px; }
+                                                .lpr-incoming-card__meta { color:#50575e; font-size:12px; margin:0; display:flex; flex-wrap:wrap; gap:8px; }
+                                                .lpr-incoming-card__eta { font-weight:700; }
+                                                .lpr-incoming-card__stats { display:flex; flex-wrap:wrap; gap:12px; padding:10px 16px; border-bottom:1px solid #dcdcde; background:#fff; }
+                                                .lpr-incoming-card__stats span { display:inline-flex; align-items:center; gap:4px; font-size:12px; }
+                                                .lpr-incoming-card table { width:100%; border-collapse:collapse; }
+                                                .lpr-incoming-card th, .lpr-incoming-card td { padding:8px 10px; border-bottom:1px solid #f0f0f1; text-align:left; }
+                                                .lpr-incoming-card th.num, .lpr-incoming-card td.num { text-align:right; white-space:nowrap; }
+                                                .lpr-badge { display:inline-block; padding:3px 8px; border-radius:12px; font-size:11px; font-weight:600; border:1px solid #2271b1; color:#2271b1; background:#e8f4fb; }
+                                        </style>
+
+                                        <div class="lpr-incoming-grid">
+                                                <?php foreach ( $rows as $row ) :
+                                                        $eta_label = $row['eta'] ? lpr_allocator_format_store_date( (string) $row['eta'] ) : __( 'No ETA set', 'lpr-backorder-allocator' );
+                                                        $po_label  = ! empty( $row['po_number'] ) ? (string) $row['po_number'] : '#' . ( $row['po_id'] ?? '' );
+                                                        $po_url    = ! empty( $row['po_url'] ) ? (string) $row['po_url'] : '';
+                                                        $line_total = isset( $row['lines'] ) && is_array( $row['lines'] ) ? count( $row['lines'] ) : 0;
+                                                        $totals    = isset( $row['totals'] ) && is_array( $row['totals'] ) ? $row['totals'] : array();
+                                                        $ordered   = (int) ( $totals['ordered'] ?? 0 );
+                                                        $allocated = (int) ( $totals['allocated'] ?? 0 );
+                                                        $received  = (int) ( $totals['received'] ?? 0 );
+                                                        $free      = (int) ( $totals['free'] ?? max( 0, $ordered - $allocated - $received ) );
+                                                        ?>
+                                                        <div class="lpr-incoming-card">
+                                                                <div class="lpr-incoming-card__header">
+                                                                        <div>
+                                                                                <p class="lpr-incoming-card__title">
+                                                                                        <?php if ( $po_url ) : ?>
+                                                                                                <a href="<?php echo esc_url( $po_url ); ?>"><?php echo esc_html( sprintf( __( 'PO #%s', 'lpr-backorder-allocator' ), $po_label ) ); ?></a>
+                                                                                        <?php else : ?>
+                                                                                                <?php echo esc_html( sprintf( __( 'PO #%s', 'lpr-backorder-allocator' ), $po_label ) ); ?>
+                                                                                        <?php endif; ?>
+                                                                                </p>
+                                                                                <p class="lpr-incoming-card__meta">
+                                                                                        <?php if ( ! empty( $row['supplier'] ) ) : ?>
+                                                                                                <span><?php echo esc_html( sprintf( __( 'Supplier: %s', 'lpr-backorder-allocator' ), (string) $row['supplier'] ) ); ?></span>
+                                                                                        <?php endif; ?>
+                                                                                        <?php if ( ! empty( $row['status'] ) ) : ?>
+                                                                                                <span><?php echo esc_html( sprintf( __( 'Status: %s', 'lpr-backorder-allocator' ), (string) $row['status'] ) ); ?></span>
+                                                                                        <?php endif; ?>
+                                                                                        <span><?php echo esc_html( sprintf( _n( '%s line', '%s lines', $line_total, 'lpr-backorder-allocator' ), number_format_i18n( $line_total ) ) ); ?></span>
+                                                                                </p>
+                                                                        </div>
+                                                                        <div class="lpr-incoming-card__eta">
+                                                                                <span class="lpr-badge"><?php echo esc_html( sprintf( __( 'ETA %s', 'lpr-backorder-allocator' ), $eta_label ) ); ?></span>
+                                                                        </div>
+                                                                </div>
+
+                                                                <div class="lpr-incoming-card__stats">
+                                                                        <span><strong><?php esc_html_e( 'Ordered', 'lpr-backorder-allocator' ); ?>:</strong> <?php echo esc_html( number_format_i18n( $ordered ) ); ?></span>
+                                                                        <span><strong><?php esc_html_e( 'Allocated to orders', 'lpr-backorder-allocator' ); ?>:</strong> <?php echo esc_html( number_format_i18n( $allocated ) ); ?></span>
+                                                                        <span><strong><?php esc_html_e( 'Received', 'lpr-backorder-allocator' ); ?>:</strong> <?php echo esc_html( number_format_i18n( $received ) ); ?></span>
+                                                                        <span><strong><?php esc_html_e( 'Free to allocate', 'lpr-backorder-allocator' ); ?>:</strong> <?php echo esc_html( number_format_i18n( $free ) ); ?></span>
+                                                                </div>
+
+                                                                <table class="widefat fixed striped">
+                                                                        <thead>
+                                                                                <tr>
+                                                                                        <th><?php esc_html_e( 'Product incoming', 'lpr-backorder-allocator' ); ?></th>
+                                                                                        <th class="num"><?php esc_html_e( 'Incoming qty', 'lpr-backorder-allocator' ); ?></th>
+                                                                                        <th class="num"><?php esc_html_e( 'Allocated', 'lpr-backorder-allocator' ); ?></th>
+                                                                                        <th class="num"><?php esc_html_e( 'Received', 'lpr-backorder-allocator' ); ?></th>
+                                                                                        <th class="num"><?php esc_html_e( 'Free', 'lpr-backorder-allocator' ); ?></th>
+                                                                                </tr>
+                                                                        </thead>
+                                                                        <tbody>
+                                                                                <?php foreach ( (array) ( $row['lines'] ?? array() ) as $line ) :
+                                                                                        $product_id = (int) ( $line['product_id'] ?? 0 );
+                                                                                        $product_url = $product_id > 0 ? get_edit_post_link( $product_id, 'url' ) : '';
+                                                                                        ?>
+                                                                                        <tr>
+                                                                                                <td>
+                                                                                                        <?php if ( $product_url ) : ?>
+                                                                                                                <a href="<?php echo esc_url( $product_url ); ?>"><?php echo esc_html( (string) ( $line['product_label'] ?? '' ) ); ?></a>
+                                                                                                        <?php else : ?>
+                                                                                                                <?php echo esc_html( (string) ( $line['product_label'] ?? '' ) ); ?>
+                                                                                                        <?php endif; ?>
+                                                                                                </td>
+                                                                                                <td class="num"><?php echo esc_html( number_format_i18n( (int) ( $line['ordered'] ?? 0 ) ) ); ?></td>
+                                                                                                <td class="num"><?php echo esc_html( number_format_i18n( (int) ( $line['allocated'] ?? 0 ) ) ); ?></td>
+                                                                                                <td class="num"><?php echo esc_html( number_format_i18n( (int) ( $line['received'] ?? 0 ) ) ); ?></td>
+                                                                                                <td class="num"><?php echo esc_html( number_format_i18n( (int) ( $line['free'] ?? 0 ) ) ); ?></td>
+                                                                                        </tr>
+                                                                                <?php endforeach; ?>
+                                                                        </tbody>
+                                                                </table>
+                                                        </div>
+                                                <?php endforeach; ?>
+                                        </div>
+                                <?php endif; ?>
+                        </div>
+                        <?php
+                }
+        }
+        Incoming_Purchase_Orders_Page::init();
+}
+
+/**
  * Admin product UI: show incoming PO availability beneath Quantity.
  */
 if ( ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Product_UI' ) ) {
