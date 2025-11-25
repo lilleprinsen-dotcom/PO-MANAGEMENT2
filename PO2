@@ -935,6 +935,12 @@ if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_sanitize_ymd' ) ) {
                         return $val;
                 }
 
+                // Accept legacy Y-m-d values and normalize to d-m-Y.
+                $legacy = \DateTimeImmutable::createFromFormat( '!Y-m-d', $val, $tz );
+                if ( $legacy && $legacy->format( 'Y-m-d' ) === $val ) {
+                        return $legacy->format( 'd-m-Y' );
+                }
+
                 return '';
         }
 }
