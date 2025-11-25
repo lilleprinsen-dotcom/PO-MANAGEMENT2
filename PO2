@@ -7800,6 +7800,8 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Order_Indexer' ) ) {
                                                 $eta_meta_key       = defined( __NAMESPACE__ . '\ORDER_ITEM_META_LINE_ETA' ) ? ORDER_ITEM_META_LINE_ETA : '_lpr_line_eta';
                                                 $line_eta           = (string) $item->get_meta( $eta_meta_key, true );
                                                 $alloc_source       = self::summarize_allocation_source( $item );
+                                                $alloc_text         = isset( $alloc_source['text'] ) ? (string) $alloc_source['text'] : '';
+                                                $alloc_url          = isset( $alloc_source['url'] ) ? (string) $alloc_source['url'] : '';
                                                 $alloc_status       = ( $allocated >= $desired ) ? __( 'Fully allocated', 'lpr-backorder-allocator' ) : ( $allocated > 0 ? __( 'Partially allocated', 'lpr-backorder-allocator' ) : __( 'Not allocated', 'lpr-backorder-allocator' ) );
                                                 $product_label      = $item->get_name();
                                                 $is_backorder_line  = ( $desired > 0 );
@@ -7829,7 +7831,8 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Order_Indexer' ) ) {
                                                         'is_backorder_line'         => $is_backorder_line,
                                                         'line_value'                => $line_total,
                                                         'eta'                       => $line_eta,
-                                                        'allocation'                => $alloc_source,
+                                                        'allocation'                => $alloc_text,
+                                                        'allocation_url'            => $alloc_url,
                                                         'allocation_label'          => $alloc_status,
                                                         'order_backorder_outstand'  => 0, // populated when order is added.
                                                 );
@@ -7859,14 +7862,18 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Order_Indexer' ) ) {
                         );
                 }
 
-                protected static function summarize_allocation_source( \WC_Order_Item_Product $item ): string {
+                protected static function summarize_allocation_source( \WC_Order_Item_Product $item ): array {
                         $key    = defined( __NAMESPACE__ . '\ORDER_ITEM_META_ALLOCATIONS' ) ? ORDER_ITEM_META_ALLOCATIONS : 'lpr_allocations';
                         $allocs = $item->get_meta( $key, true );
                         if ( ! is_array( $allocs ) || empty( $allocs ) ) {
-                                return __( 'Not allocated', 'lpr-backorder-allocator' );
+                                return array(
+                                        'text' => __( 'Not allocated', 'lpr-backorder-allocator' ),
+                                        'url'  => '',
+                                );
                         }
 
-                        $best = '';
+                        $best     = '';
+                        $best_url = '';
                         foreach ( $allocs as $row ) {
                                 $status = isset( $row['status'] ) ? sanitize_key( (string) $row['status'] ) : 'reserved';
                                 if ( 'released' === $status ) {
@@ -7876,6 +7883,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Order_Indexer' ) ) {
                                 $po_id  = isset( $row['po_id'] ) ? (int) $row['po_id'] : 0;
                                 $eta    = '';
                                 $source = '';
+                                $url    = '';
 
                                 if ( $po_id > 0 ) {
                                         $eta = class_exists( __NAMESPACE__ . '\ETA' ) ? ETA::live_eta_from_po( $po_id, $item ) : '';
@@ -7886,6 +7894,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Order_Indexer' ) ) {
                                         if ( '' === $po_number && isset( $row['po_number'] ) ) {
                                                 $po_number = (string) $row['po_number'];
                                         }
+                                        $url     = get_edit_post_link( $po_id, 'url' );
                                         $source = $po_number ? sprintf( __( 'PO #%s', 'lpr-backorder-allocator' ), $po_number ) : __( 'PO allocation', 'lpr-backorder-allocator' );
                                 } elseif ( ! empty( $row['source'] ) ) {
                                         $source = (string) $row['source'];
@@ -7905,11 +7914,15 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Order_Indexer' ) ) {
                                 }
 
                                 if ( '' === $best ) {
-                                        $best = $text;
+                                        $best     = $text;
+                                        $best_url = $url;
                                 }
                         }
 
-                        return $best ?: __( 'Not allocated', 'lpr-backorder-allocator' );
+                        return array(
+                                'text' => $best ?: __( 'Not allocated', 'lpr-backorder-allocator' ),
+                                'url'  => $best_url,
+                        );
                 }
         }
         Backorder_Order_Indexer::init();
@@ -7946,22 +7959,23 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Orders_Page' ) ) {
                                 }
 
                                 if ( ! isset( $orders[ $oid ] ) ) {
-                                        $orders[ $oid ] = array(
-                                                'order_id'               => $oid,
-                                                'order_number'           => isset( $row['order_number'] ) ? (string) $row['order_number'] : '',
-                                                'order_url'              => isset( $row['order_url'] ) ? (string) $row['order_url'] : '',
-                                                'order_date'             => isset( $row['order_date'] ) ? (string) $row['order_date'] : '',
-                                                'order_date_ts'          => isset( $row['order_date_ts'] ) ? (int) $row['order_date_ts'] : 0,
-                                                'status'                 => isset( $row['status'] ) ? (string) $row['status'] : '',
-                                                'customer'               => isset( $row['customer'] ) ? (string) $row['customer'] : '',
-                                                'currency'               => isset( $row['currency'] ) ? (string) $row['currency'] : '',
-                                                'customer_email'         => isset( $row['customer_email'] ) ? sanitize_email( (string) $row['customer_email'] ) : '',
-                                                'latest_eta'             => '',
-                                                'rows'                   => array(),
-                                                'outstanding_backorder'  => 0,
-                                                'has_backorder_line'     => false,
-                                        );
-                                }
+                                                $orders[ $oid ] = array(
+                                                        'order_id'               => $oid,
+                                                        'order_number'           => isset( $row['order_number'] ) ? (string) $row['order_number'] : '',
+                                                        'order_url'              => isset( $row['order_url'] ) ? (string) $row['order_url'] : '',
+                                                        'order_date'             => isset( $row['order_date'] ) ? (string) $row['order_date'] : '',
+                                                        'order_date_ts'          => isset( $row['order_date_ts'] ) ? (int) $row['order_date_ts'] : 0,
+                                                        'status'                 => isset( $row['status'] ) ? (string) $row['status'] : '',
+                                                        'customer'               => isset( $row['customer'] ) ? (string) $row['customer'] : '',
+                                                        'currency'               => isset( $row['currency'] ) ? (string) $row['currency'] : '',
+                                                        'customer_email'         => isset( $row['customer_email'] ) ? sanitize_email( (string) $row['customer_email'] ) : '',
+                                                        'latest_eta'             => '',
+                                                        'latest_eta_ts'          => 0,
+                                                        'rows'                   => array(),
+                                                        'outstanding_backorder'  => 0,
+                                                        'has_backorder_line'     => false,
+                                                );
+                                        }
 
                                 if ( '' === $orders[ $oid ]['customer_email'] && ! empty( $row['customer_email'] ) ) {
                                         $orders[ $oid ]['customer_email'] = sanitize_email( (string) $row['customer_email'] );
@@ -7973,8 +7987,14 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Orders_Page' ) ) {
 
                                 if ( ! empty( $row['is_backorder_line'] ) && ! empty( $row['eta'] ) ) {
                                         $eta = lpr_allocator_sanitize_ymd( (string) $row['eta'] );
-                                        if ( $eta && ( '' === $orders[ $oid ]['latest_eta'] || $eta > $orders[ $oid ]['latest_eta'] ) ) {
-                                                $orders[ $oid ]['latest_eta'] = $eta;
+                                        if ( $eta ) {
+                                                $eta_obj = lpr_allocator_parse_date( $eta );
+                                                $eta_ts  = $eta_obj ? $eta_obj->getTimestamp() : 0;
+
+                                                if ( $eta_ts > 0 && ( $eta_ts > ( $orders[ $oid ]['latest_eta_ts'] ?? 0 ) ) ) {
+                                                        $orders[ $oid ]['latest_eta']    = $eta;
+                                                        $orders[ $oid ]['latest_eta_ts'] = $eta_ts;
+                                                }
                                         }
                                 }
                         }
@@ -8317,7 +8337,13 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Orders_Page' ) ) {
                                                                                                 </td>
                                                                                                 <td class="num"><?php echo wp_kses_post( self::format_money( (float) $row['line_value'], (string) $row['currency'] ) ); ?></td>
                                                                                                 <td><?php echo $eta ? esc_html( $eta ) : '&#8211;'; ?></td>
-                                                                                                <td><?php echo esc_html( (string) $row['allocation'] ); ?></td>
+                                                                                                <td>
+                                                                                                        <?php if ( ! empty( $row['allocation_url'] ) ) : ?>
+                                                                                                                <a href="<?php echo esc_url( (string) $row['allocation_url'] ); ?>"><?php echo esc_html( (string) $row['allocation'] ); ?></a>
+                                                                                                        <?php else : ?>
+                                                                                                                <?php echo esc_html( (string) $row['allocation'] ); ?>
+                                                                                                        <?php endif; ?>
+                                                                                                </td>
                                                                                                 <td><?php echo esc_html( (string) $row['allocation_label'] ); ?></td>
                                                                                         </tr>
                                                                                 <?php endforeach; ?>
