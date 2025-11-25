@@ -905,6 +905,9 @@ if ( ! defined( __NAMESPACE__ . '\PO_META_ALLOC_INDEX' ) ) {
         // Stores [{order_id,int,item_id,int}] used to reconstitute allocations safely.
         define( __NAMESPACE__ . '\PO_META_ALLOC_INDEX', '_lpr_po_alloc_index' );
 }
+if ( ! defined( __NAMESPACE__ . '\PO_META_RECEIPTS' ) ) {
+        define( __NAMESPACE__ . '\PO_META_RECEIPTS', '_lpr_po_receipts' );
+}
 if ( ! defined( __NAMESPACE__ . '\PO_STATUS_OPEN' ) ) {
 	define( __NAMESPACE__ . '\PO_STATUS_OPEN', 'open' );
 }
@@ -5361,6 +5364,865 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_Allocate_Button_UI' ) ) {
 		}
 	}
         PO_Allocate_Button_UI::init();
+}
+
+if ( ! class_exists( __NAMESPACE__ . '\PO_Receive_Stock_UI' ) ) {
+        /**
+         * Adds an "Adjust stock" button + modal to receive PO quantities into inventory.
+         */
+        class PO_Receive_Stock_UI {
+
+                const ACTION_HOOK = 'lpr_allocator_receive_po';
+
+                public static function init(): void {
+                        add_action( 'post_submitbox_misc_actions', array( __CLASS__, 'render_button' ) );
+                        add_action( 'admin_footer', array( __CLASS__, 'print_modal_assets' ) );
+                        add_action( 'wp_ajax_lpr_po_receive_lines', array( __CLASS__, 'ajax_lines' ) );
+                        add_action( 'wp_ajax_lpr_po_receive_apply', array( __CLASS__, 'ajax_apply' ) );
+                        add_action( 'add_meta_boxes', array( __CLASS__, 'register_log_box' ), 40 );
+                        add_action( self::ACTION_HOOK, array( __CLASS__, 'process_receipt' ), 10, 2 );
+                }
+
+                /**
+                 * Render the Adjust stock trigger on the PO submit box.
+                 */
+                public static function render_button(): void {
+                        global $post;
+
+                        if ( ! ( $post instanceof \WP_Post ) ) {
+                                return;
+                        }
+                        if ( ( defined( __NAMESPACE__ . '\CPT_SUPPLIER_PO' ) ? CPT_SUPPLIER_PO : 'supplier_po' ) !== $post->post_type ) {
+                                return;
+                        }
+                        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+                                return;
+                        }
+
+                        $nonce = wp_create_nonce( 'lpr_receive_po_' . $post->ID );
+
+                        echo '<div class="misc-pub-section lpr-receive-stock">';
+                        echo '<button type="button" class="button button-secondary lpr-open-receive" data-po="' . esc_attr( (string) $post->ID ) . '" data-nonce="' . esc_attr( $nonce ) . '">' . esc_html__( 'Adjust stock', 'lpr-backorder-allocator' ) . '</button>';
+                        echo '<span style="margin-left:8px;opacity:.8;">' . esc_html__( 'Receive stock for each PO line.', 'lpr-backorder-allocator' ) . '</span>';
+                        echo '</div>';
+                }
+
+                /**
+                 * Print modal styles + JS once on the PO edit screen.
+                 */
+                public static function print_modal_assets(): void {
+                        $screen = function_exists( 'get_current_screen' ) ? get_current_screen() : null;
+                        if ( ! $screen || $screen->post_type !== ( defined( __NAMESPACE__ . '\CPT_SUPPLIER_PO' ) ? CPT_SUPPLIER_PO : 'supplier_po' ) ) {
+                                return;
+                        }
+                        ?>
+                        <style>
+                                .lpr-po-receive-overlay{position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;padding:20px;}
+                                .lpr-po-receive-modal{background:#fff;max-width:900px;width:100%;border-radius:6px;box-shadow:0 10px 40px rgba(0,0,0,.25);overflow:hidden;}
+                                .lpr-po-receive-modal header{padding:14px 16px;border-bottom:1px solid #eee;display:flex;align-items:center;justify-content:space-between;}
+                                .lpr-po-receive-modal header h3{margin:0;font-size:16px;}
+                                .lpr-po-receive-modal .lpr-body{max-height:60vh;overflow:auto;padding:16px;}
+                                .lpr-po-receive-modal table{width:100%;border-collapse:collapse;}
+                                .lpr-po-receive-modal th,.lpr-po-receive-modal td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:top;}
+                                .lpr-po-receive-modal .lpr-actions{padding:12px 16px;border-top:1px solid #eee;text-align:right;}
+                                .lpr-po-receive-modal .lpr-status{margin:0 0 10px;font-style:italic;opacity:.8;}
+                        </style>
+                        <script>
+                        (function($){
+                                function renderRows(lines){
+                                        if(!lines || !lines.length){
+                                                return '<p><?php echo esc_js( __( 'No PO lines found.', 'lpr-backorder-allocator' ) ); ?></p>';
+                                        }
+                                        var html = '<table class="widefat striped"><thead><tr>'+
+                                                '<th><?php echo esc_js( __( 'Product', 'lpr-backorder-allocator' ) ); ?></th>'+
+                                                '<th><?php echo esc_js( __( 'Ordered', 'lpr-backorder-allocator' ) ); ?></th>'+
+                                                '<th><?php echo esc_js( __( 'Live stock', 'lpr-backorder-allocator' ) ); ?></th>'+
+                                                '<th><?php echo esc_js( __( 'Already received', 'lpr-backorder-allocator' ) ); ?></th>'+
+                                                '<th><?php echo esc_js( __( 'Qty to receive now', 'lpr-backorder-allocator' ) ); ?></th>'+
+                                        '</tr></thead><tbody>';
+                                        lines.forEach(function(line){
+                                                var stock = (line.stock === null || typeof line.stock === 'undefined') ? '<?php echo esc_js( '—' ); ?>' : line.stock;
+                                                var remaining = typeof line.remaining === 'number' ? line.remaining : 0;
+                                                var disable = remaining <= 0;
+                                                var desc = disable ? '<div class="description"><?php echo esc_js( __( 'Fully received', 'lpr-backorder-allocator' ) ); ?></div>' : '<div class="description">'+remaining+' <?php echo esc_js( __( 'remaining', 'lpr-backorder-allocator' ) ); ?></div>';
+                                                html += '<tr>'+
+                                                        '<td>'+line.product+'</td>'+
+                                                        '<td>'+line.ordered+'</td>'+
+                                                        '<td>'+stock+'</td>'+
+                                                        '<td>'+line.received+'</td>'+
+                                                        '<td><input type="number" min="0" step="1" class="lpr-receive-input" data-idx="'+line.idx+'" data-stock="'+stock+'" data-ordered="'+line.ordered+'" data-received="'+line.received+'" data-remaining="'+remaining+'" value="0" '+(disable ? 'disabled' : '')+' max="'+remaining+'" style="width:120px;" />'+desc+'</td>'+
+                                                '</tr>';
+                                        });
+                                        html += '</tbody></table>';
+                                        return html;
+                                }
+
+                                function openModal(poId, nonce, lines){
+                                        $('.lpr-po-receive-overlay').remove();
+                                        var bodyHtml = renderRows(lines);
+                                        var tpl = '<div class="lpr-po-receive-overlay">'+
+                                                '<div class="lpr-po-receive-modal" data-po="'+poId+'" data-nonce="'+nonce+'">'+
+                                                        '<header><h3><?php echo esc_js( __( 'Receive stock', 'lpr-backorder-allocator' ) ); ?></h3><a href="#" class="lpr-po-receive-close">&times;</a></header>'+
+                                                        '<div class="lpr-body">'+
+                                                                '<p class="lpr-status"></p>'+
+                                                                '<div class="lpr-entry-view">'+ bodyHtml +'</div>'+
+                                                                '<div class="lpr-preview-view" style="display:none;"></div>'+
+                                                        '</div>'+
+                                                        '<div class="lpr-actions">'+
+                                                                '<button type="button" class="button button-primary lpr-submit-receive"><?php echo esc_js( __( 'Receive stock', 'lpr-backorder-allocator' ) ); ?></button>'+
+                                                                '<button type="button" class="button button-primary lpr-confirm-receive" style="display:none;"><?php echo esc_js( __( 'Confirm', 'lpr-backorder-allocator' ) ); ?></button>'+
+                                                                '<button type="button" class="button lpr-edit-receive" style="margin-left:8px;display:none;"><?php echo esc_js( __( 'Back', 'lpr-backorder-allocator' ) ); ?></button>'+
+                                                                '<button type="button" class="button lpr-po-receive-cancel" style="margin-left:8px;"><?php echo esc_js( __( 'Cancel', 'lpr-backorder-allocator' ) ); ?></button>'+
+                                                        '</div>'+
+                                                '</div>'+
+                                        '</div>';
+                                        var $overlay = $(tpl).appendTo('body');
+                                        $overlay.fadeIn(120);
+                                }
+
+                                function fetchLines(poId, nonce){
+                                        return $.post(ajaxurl, {action:'lpr_po_receive_lines', po_id: poId, nonce: nonce});
+                                }
+
+                                function applyReceive(poId, nonce, payload){
+                                        return $.post(ajaxurl, {action:'lpr_po_receive_apply', po_id: poId, nonce: nonce, lines: payload});
+                                }
+
+                                function showPreview($modal, rows){
+                                        var html = '<h4><?php echo esc_js( __( 'Review receipt', 'lpr-backorder-allocator' ) ); ?></h4>';
+                                        html += '<table class="widefat striped"><thead><tr>'+
+                                                '<th><?php echo esc_js( __( 'Product', 'lpr-backorder-allocator' ) ); ?></th>'+
+                                                '<th><?php echo esc_js( __( 'Current stock', 'lpr-backorder-allocator' ) ); ?></th>'+
+                                                '<th><?php echo esc_js( __( 'Quantity to receive now', 'lpr-backorder-allocator' ) ); ?></th>'+
+                                                '<th><?php echo esc_js( __( 'New stock', 'lpr-backorder-allocator' ) ); ?></th>'+
+                                        '</tr></thead><tbody>';
+
+                                        rows.forEach(function(row){
+                                                var current = (row.stock === null || row.stock === '' || typeof row.stock === 'undefined') ? '<?php echo esc_js( '—' ); ?>' : row.stock;
+                                                var newStock = current === '<?php echo esc_js( '—' ); ?>' ? '<?php echo esc_js( '—' ); ?>' : (parseInt(current, 10) + row.qty);
+                                                html += '<tr>'+
+                                                        '<td>'+row.product+'</td>'+
+                                                        '<td>'+current+'</td>'+
+                                                        '<td>'+row.qty+'</td>'+
+                                                        '<td>'+newStock+'</td>'+
+                                                '</tr>';
+                                        });
+
+                                        html += '</tbody></table>';
+                                        $modal.data('previewRows', rows);
+                                        $modal.find('.lpr-preview-view').html(html).show();
+                                        $modal.find('.lpr-entry-view').hide();
+                                        $modal.find('.lpr-submit-receive').hide();
+                                        $modal.find('.lpr-confirm-receive, .lpr-edit-receive').show();
+                                        $modal.find('.lpr-status').text('');
+                                }
+
+                                function showEntry($modal){
+                                        $modal.removeData('previewRows');
+                                        $modal.find('.lpr-preview-view').hide().empty();
+                                        $modal.find('.lpr-entry-view').show();
+                                        $modal.find('.lpr-confirm-receive, .lpr-edit-receive').hide();
+                                        $modal.find('.lpr-submit-receive').show();
+                                }
+
+                                $(document).on('click', '.lpr-open-receive', function(e){
+                                        e.preventDefault();
+                                        var $btn = $(this);
+                                        var poId = $btn.data('po');
+                                        var nonce = $btn.data('nonce');
+                                        if(!poId || !nonce){ return; }
+                                        $btn.prop('disabled', true);
+                                        fetchLines(poId, nonce).done(function(resp){
+                                                if(resp && resp.success && resp.data && resp.data.lines){
+                                                        openModal(poId, nonce, resp.data.lines);
+                                                }else{
+                                                        window.alert((resp && resp.data && resp.data.message) ? resp.data.message : '<?php echo esc_js( __( 'Unable to load PO lines.', 'lpr-backorder-allocator' ) ); ?>');
+                                                }
+                                        }).fail(function(){
+                                                window.alert('<?php echo esc_js( __( 'Unable to load PO lines.', 'lpr-backorder-allocator' ) ); ?>');
+                                        }).always(function(){
+                                                $btn.prop('disabled', false);
+                                        });
+                                });
+
+                                $(document).on('click', '.lpr-po-receive-close, .lpr-po-receive-cancel', function(e){
+                                        e.preventDefault();
+                                        $(this).closest('.lpr-po-receive-overlay').fadeOut(120, function(){ $(this).remove(); });
+                                });
+
+                                $(document).on('click', '.lpr-po-receive-overlay', function(e){
+                                        if($(e.target).hasClass('lpr-po-receive-overlay')){
+                                                $(this).fadeOut(120, function(){ $(this).remove(); });
+                                        }
+                                });
+
+                                $(document).on('click', '.lpr-edit-receive', function(e){
+                                        e.preventDefault();
+                                        var $modal = $(this).closest('.lpr-po-receive-modal');
+                                        showEntry($modal);
+                                        $modal.find('.lpr-status').text('');
+                                });
+
+                                $(document).on('click', '.lpr-submit-receive', function(e){
+                                        e.preventDefault();
+                                        var $modal = $(this).closest('.lpr-po-receive-modal');
+                                        var rows = [];
+                                        var adjusted = false;
+
+                                        $modal.find('.lpr-receive-input').each(function(){
+                                                var $input = $(this);
+                                                if($input.is(':disabled')){ return; }
+                                                var remaining = parseInt($input.data('remaining'), 10) || 0;
+                                                var qty = parseInt($input.val(), 10);
+                                                if(isNaN(qty) || qty < 0){ qty = 0; }
+                                                if(qty > remaining){ qty = remaining; $input.val(remaining); adjusted = true; }
+                                                if(qty <= 0){ return; }
+
+                                                var product = $input.closest('tr').find('td').first().text();
+                                                rows.push({
+                                                        idx: $input.data('idx'),
+                                                        qty: qty,
+                                                        stock: $input.data('stock'),
+                                                        product: product
+                                                });
+                                        });
+
+                                        if(adjusted){
+                                                $modal.find('.lpr-status').text('<?php echo esc_js( __( 'Quantities reduced to the remaining ordered amount.', 'lpr-backorder-allocator' ) ); ?>');
+                                        } else {
+                                                $modal.find('.lpr-status').text('');
+                                        }
+
+                                        if(!rows.length){
+                                                $modal.find('.lpr-status').text('<?php echo esc_js( __( 'Enter a quantity to receive.', 'lpr-backorder-allocator' ) ); ?>');
+                                                return;
+                                        }
+
+                                        showPreview($modal, rows);
+                                });
+
+                                $(document).on('click', '.lpr-confirm-receive', function(e){
+                                        e.preventDefault();
+                                        var $modal = $(this).closest('.lpr-po-receive-modal');
+                                        var rows = $modal.data('previewRows') || [];
+                                        if(!rows.length){
+                                                $modal.find('.lpr-status').text('<?php echo esc_js( __( 'No quantities to apply.', 'lpr-backorder-allocator' ) ); ?>');
+                                                return;
+                                        }
+
+                                        var payload = {};
+                                        rows.forEach(function(row){ payload[row.idx] = row.qty; });
+                                        var poId = $modal.data('po');
+                                        var nonce = $modal.data('nonce');
+
+                                        $modal.find('button').prop('disabled', true);
+                                        applyReceive(poId, nonce, payload).done(function(resp){
+                                                if(resp && resp.success && resp.data && resp.data.lines){
+                                                        var newTable = renderRows(resp.data.lines);
+                                                        $modal.find('.lpr-entry-view').html(newTable);
+                                                        showEntry($modal);
+                                                        $modal.find('.lpr-status').text(resp.data.message || '<?php echo esc_js( __( 'Received quantities updated.', 'lpr-backorder-allocator' ) ); ?>');
+                                                }else{
+                                                        var msg = (resp && resp.data && resp.data.message) ? resp.data.message : '<?php echo esc_js( __( 'Unable to apply received quantities.', 'lpr-backorder-allocator' ) ); ?>';
+                                                        if(resp && resp.data && resp.data.details && resp.data.details.length){
+                                                                msg += ' ' + resp.data.details.join(' ');
+                                                        }
+                                                        if(resp && resp.data && resp.data.lines){
+                                                                $modal.find('.lpr-entry-view').html(renderRows(resp.data.lines));
+                                                                showEntry($modal);
+                                                        }
+                                                        $modal.find('.lpr-status').text(msg);
+                                                }
+                                        }).fail(function(){
+                                                $modal.find('.lpr-status').text('<?php echo esc_js( __( 'Unable to apply received quantities.', 'lpr-backorder-allocator' ) ); ?>');
+                                        }).always(function(){
+                                                $modal.find('button').prop('disabled', false);
+                                        });
+                                });
+                        })(jQuery);
+                        </script>
+                        <?php
+                }
+
+                /**
+                 * Register the Received stock log meta box.
+                 */
+                public static function register_log_box(): void {
+                        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+                                return;
+                        }
+
+                        add_meta_box(
+                                'lpr_po_receipts',
+                                __( 'Received stock', 'lpr-backorder-allocator' ),
+                                array( __CLASS__, 'render_log_box' ),
+                                defined( __NAMESPACE__ . '\CPT_SUPPLIER_PO' ) ? CPT_SUPPLIER_PO : 'supplier_po',
+                                'normal',
+                                'low'
+                        );
+                }
+
+                /**
+                 * Render receipt history.
+                 *
+                 * @param \WP_Post $post
+                 */
+                public static function render_log_box( \WP_Post $post ): void {
+                        $receipts = self::get_receipts( (int) $post->ID );
+
+                        echo '<details class="lpr-po-receipts" open>';
+                        echo '<summary><strong>' . esc_html__( 'Received stock', 'lpr-backorder-allocator' ) . '</strong></summary>';
+
+                        if ( empty( $receipts ) ) {
+                                echo '<p>' . esc_html__( 'No receipts have been logged for this PO.', 'lpr-backorder-allocator' ) . '</p>';
+                                echo '</details>';
+                                return;
+                        }
+
+                        usort(
+                                $receipts,
+                                static function ( $a, $b ) {
+                                        return strcmp( $b['created_at'] ?? '', $a['created_at'] ?? '' );
+                                }
+                        );
+
+                        $labels = array();
+                        $get_label = function ( int $product_id, int $variation_id ) use ( &$labels ): string {
+                                $target = $variation_id > 0 ? $variation_id : $product_id;
+                                if ( $target <= 0 ) {
+                                        return __( 'Unknown product', 'lpr-backorder-allocator' );
+                                }
+                                if ( isset( $labels[ $target ] ) ) {
+                                        return $labels[ $target ];
+                                }
+                                $label = '#' . $target;
+                                if ( function_exists( 'wc_get_product' ) ) {
+                                        $product = wc_get_product( $target );
+                                        if ( $product instanceof \WC_Product ) {
+                                                $label = lpr_allocator_product_option_label( $target );
+                                                $label = wp_strip_all_tags( $label );
+                                        }
+                                }
+                                $labels[ $target ] = $label;
+                                return $label;
+                        };
+
+                        echo '<div class="lpr-po-receipts-list">';
+                        foreach ( $receipts as $receipt ) {
+                                $status   = self::resolve_receipt_status( $receipt );
+                                $datetime = ! empty( $receipt['created_at'] ) ? mysql2date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), $receipt['created_at'] ) : '';
+                                $job      = ! empty( $receipt['action_id'] ) ? '#' . absint( $receipt['action_id'] ) : __( 'n/a', 'lpr-backorder-allocator' );
+                                echo '<div class="lpr-po-receipt-entry">';
+                                echo '<p><strong>' . esc_html( $datetime ) . '</strong> — ' . esc_html( ucfirst( $status ) ) . ' (' . esc_html__( 'Job', 'lpr-backorder-allocator' ) . ' ' . esc_html( $job ) . ')</p>';
+                                if ( ! empty( $receipt['message'] ) ) {
+                                        echo '<p><em>' . esc_html( (string) $receipt['message'] ) . '</em></p>';
+                                }
+
+                                $rows = ! empty( $receipt['logs'] ) ? $receipt['logs'] : array();
+                                if ( empty( $rows ) && ! empty( $receipt['lines'] ) ) {
+                                        foreach ( $receipt['lines'] as $line ) {
+                                                $rows[] = array(
+                                                        'product_id'   => (int) ( $line['product_id'] ?? 0 ),
+                                                        'variation_id' => (int) ( $line['variation_id'] ?? 0 ),
+                                                        'qty'          => (int) ( $line['qty'] ?? 0 ),
+                                                        'stock_before' => null,
+                                                        'stock_after'  => null,
+                                                );
+                                        }
+                                }
+
+                                echo '<table class="widefat fixed striped" style="margin-top:8px;">';
+                                echo '<thead><tr><th>' . esc_html__( 'Product', 'lpr-backorder-allocator' ) . '</th><th>' . esc_html__( 'Qty received', 'lpr-backorder-allocator' ) . '</th><th>' . esc_html__( 'Stock before', 'lpr-backorder-allocator' ) . '</th><th>' . esc_html__( 'Stock after', 'lpr-backorder-allocator' ) . '</th></tr></thead>';
+                                echo '<tbody>';
+                                foreach ( $rows as $row ) {
+                                        $before = isset( $row['stock_before'] ) ? (string) $row['stock_before'] : '—';
+                                        $after  = isset( $row['stock_after'] ) ? (string) $row['stock_after'] : '—';
+                                        echo '<tr>';
+                                        echo '<td>' . esc_html( $get_label( (int) ( $row['product_id'] ?? 0 ), (int) ( $row['variation_id'] ?? 0 ) ) ) . '</td>';
+                                        echo '<td>' . esc_html( (string) max( 0, (int) ( $row['qty'] ?? 0 ) ) ) . '</td>';
+                                        echo '<td>' . esc_html( $before ) . '</td>';
+                                        echo '<td>' . esc_html( $after ) . '</td>';
+                                        echo '</tr>';
+                                }
+                                echo '</tbody>';
+                                echo '</table>';
+                                echo '</div>';
+                        }
+                        echo '</div>';
+                        echo '</details>';
+                }
+
+                /**
+                 * Resolve the display status for a receipt.
+                 *
+                 * @param array $receipt
+                 * @return string
+                 */
+                protected static function resolve_receipt_status( array $receipt ): string {
+                        $status = isset( $receipt['status'] ) ? (string) $receipt['status'] : 'pending';
+
+                        if ( 'pending' === $status && ! empty( $receipt['action_id'] ) && function_exists( 'as_get_scheduled_action' ) ) {
+                                try {
+                                        $action = as_get_scheduled_action( (int) $receipt['action_id'] );
+                                        if ( $action && is_object( $action ) && method_exists( $action, 'get_status' ) ) {
+                                                $status = (string) $action->get_status();
+                                        }
+                                } catch ( \Exception $e ) { // phpcs:ignore Generic.CodeAnalysis.EmptyStatement.DetectedCatch
+                                        // Keep stored status.
+                                }
+                        }
+
+                        if ( 'complete' === $status ) {
+                                $status = 'completed';
+                        }
+
+                        return $status;
+                }
+
+                /**
+                 * Fetch stored receipt log.
+                 */
+                protected static function get_receipts( int $po_id ): array {
+                        $receipts = get_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_RECEIPTS' ) ? PO_META_RECEIPTS : '_lpr_po_receipts', true );
+                        if ( ! is_array( $receipts ) ) {
+                                return array();
+                        }
+
+                        return $receipts;
+                }
+
+                /**
+                 * Persist receipt log.
+                 */
+                protected static function save_receipts( int $po_id, array $receipts ): void {
+                        update_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_RECEIPTS' ) ? PO_META_RECEIPTS : '_lpr_po_receipts', array_values( $receipts ) );
+                }
+
+                /**
+                 * Queue an Action Scheduler job for a PO receipt.
+                 */
+                protected static function enqueue_action( int $po_id, string $receipt_id ): int {
+                        try {
+                                if ( function_exists( 'as_enqueue_async_action' ) ) {
+                                        return (int) as_enqueue_async_action( self::ACTION_HOOK, array( $po_id, $receipt_id ), 'lpr-allocator' );
+                                }
+                                if ( function_exists( 'as_schedule_single_action' ) ) {
+                                        return (int) as_schedule_single_action( time(), self::ACTION_HOOK, array( $po_id, $receipt_id ), 'lpr-allocator', true );
+                                }
+                        } catch ( \Exception $e ) { // phpcs:ignore Generic.CodeAnalysis.EmptyStatement.DetectedCatch
+                                // Surface failure via zero return.
+                        }
+
+                        return 0;
+                }
+
+                /**
+                 * Action Scheduler runner: increase stock and update receipt logs.
+                 */
+                public static function process_receipt( int $po_id, string $receipt_id ): void {
+                        $receipts       = self::get_receipts( $po_id );
+                        $receipt_index  = null;
+                        $receipt_lines  = array();
+                        foreach ( $receipts as $i => $receipt ) {
+                                if ( isset( $receipt['id'] ) && $receipt_id === (string) $receipt['id'] ) {
+                                        $receipt_index = $i;
+                                        $receipt_lines = isset( $receipt['lines'] ) && is_array( $receipt['lines'] ) ? $receipt['lines'] : array();
+                                        if ( 'completed' === (string) ( $receipt['status'] ?? '' ) ) {
+                                                return;
+                                        }
+                                        break;
+                                }
+                        }
+
+                        if ( null === $receipt_index ) {
+                                return;
+                        }
+
+                        $po_lines = get_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_LINES' ) ? PO_META_LINES : '_lpr_po_lines', true );
+                        if ( ! is_array( $po_lines ) ) {
+                                $po_lines = array();
+                        }
+
+                        $errors        = array();
+                        $targets       = array();
+                        $revert_lines  = array();
+                        $line_logs     = array();
+                        $line_sequence = array();
+
+                        if ( empty( $receipt_lines ) ) {
+                                $errors[] = __( 'No lines to process for this receipt.', 'lpr-backorder-allocator' );
+                        }
+
+                        foreach ( $receipt_lines as $entry ) {
+                                $idx = (int) ( $entry['idx'] ?? -1 );
+                                $qty = max( 0, (int) ( $entry['qty'] ?? 0 ) );
+                                if ( $idx < 0 || $qty <= 0 ) {
+                                        continue;
+                                }
+
+                                if ( ! isset( $po_lines[ $idx ] ) ) {
+                                        $errors[] = sprintf( __( 'Line %d no longer exists on this PO.', 'lpr-backorder-allocator' ), $idx );
+                                        continue;
+                                }
+
+                                $ordered         = isset( $po_lines[ $idx ]['qty_ordered'] ) ? max( 0, (int) $po_lines[ $idx ]['qty_ordered'] ) : 0;
+                                $current_received = isset( $po_lines[ $idx ]['qty_received'] ) ? max( 0, (int) $po_lines[ $idx ]['qty_received'] ) : 0;
+                                $prev_received   = isset( $entry['qty_before'] ) ? max( 0, (int) $entry['qty_before'] ) : 0;
+                                $expected        = $prev_received + $qty;
+                                $revert_lines[ $idx ] = $prev_received;
+
+                                if ( $expected > $ordered ) {
+                                        $errors[] = sprintf( __( 'Line %d exceeds its ordered quantity.', 'lpr-backorder-allocator' ), $idx );
+                                        continue;
+                                }
+
+                                if ( $current_received < $expected ) {
+                                        $errors[] = sprintf( __( 'Line %d was modified and no longer matches the queued receipt.', 'lpr-backorder-allocator' ), $idx );
+                                        continue;
+                                }
+
+                                $target = isset( $entry['variation_id'] ) && (int) $entry['variation_id'] > 0 ? (int) $entry['variation_id'] : (int) ( $entry['product_id'] ?? 0 );
+                                if ( $target <= 0 ) {
+                                        $errors[] = sprintf( __( 'Line %d is missing a product reference.', 'lpr-backorder-allocator' ), $idx );
+                                        continue;
+                                }
+
+                                if ( ! isset( $targets[ $target ] ) ) {
+                                        $product = function_exists( 'wc_get_product' ) ? wc_get_product( $target ) : null;
+                                        if ( ! ( $product instanceof \WC_Product ) ) {
+                                                $errors[] = sprintf( __( 'Product %d no longer exists.', 'lpr-backorder-allocator' ), $target );
+                                                continue;
+                                        }
+
+                                        $before = function_exists( 'wc_stock_amount' ) ? wc_stock_amount( $product->get_stock_quantity() ) : (int) $product->get_stock_quantity();
+                                        $targets[ $target ] = array(
+                                                'product'   => $product,
+                                                'before'    => $before,
+                                                'qty_total' => 0,
+                                        );
+                                }
+
+                                $targets[ $target ]['qty_total'] += $qty;
+                                $line_sequence[] = array(
+                                        'target'       => $target,
+                                        'product_id'   => (int) ( $entry['product_id'] ?? 0 ),
+                                        'variation_id' => (int) ( $entry['variation_id'] ?? 0 ),
+                                        'qty'          => $qty,
+                                );
+                        }
+
+                        if ( ! empty( $errors ) ) {
+                                self::mark_receipt_failed( $po_id, $receipts, $receipt_index, $errors, $revert_lines, $po_lines );
+                                return;
+                        }
+
+                        $applied = array();
+                        foreach ( $targets as $target => $data ) {
+                                try {
+                                        $after_raw = function_exists( 'wc_update_product_stock' ) ? wc_update_product_stock( $data['product'], $data['qty_total'], 'increase' ) : null;
+                                        $after     = function_exists( 'wc_stock_amount' ) ? wc_stock_amount( $after_raw ) : (int) $after_raw;
+                                } catch ( \WC_Data_Exception $e ) {
+                                        $errors[] = $e->getMessage();
+                                        break;
+                                }
+
+                                $applied[ $target ] = array(
+                                        'before' => $data['before'],
+                                        'after'  => $after,
+                                        'qty'    => $data['qty_total'],
+                                );
+                        }
+
+                        if ( ! empty( $errors ) ) {
+                                foreach ( $applied as $target => $data ) {
+                                        try {
+                                                if ( function_exists( 'wc_update_product_stock' ) ) {
+                                                        wc_update_product_stock( $targets[ $target ]['product'], $data['qty'], 'decrease' );
+                                                }
+                                        } catch ( \Exception $e ) { // phpcs:ignore Generic.CodeAnalysis.EmptyStatement.DetectedCatch
+                                                // Best-effort revert.
+                                        }
+                                }
+
+                                self::mark_receipt_failed( $po_id, $receipts, $receipt_index, $errors, $revert_lines, $po_lines );
+                                return;
+                        }
+
+                        $running = array();
+                        foreach ( $line_sequence as $line ) {
+                                $target = $line['target'];
+                                if ( ! isset( $applied[ $target ] ) ) {
+                                        continue;
+                                }
+                                $before              = isset( $running[ $target ] ) ? $running[ $target ] : $applied[ $target ]['before'];
+                                $after               = $before + $line['qty'];
+                                $running[ $target ]  = $after;
+                                $line_logs[]         = array(
+                                        'product_id'   => $line['product_id'],
+                                        'variation_id' => $line['variation_id'],
+                                        'qty'          => $line['qty'],
+                                        'stock_before' => $before,
+                                        'stock_after'  => $after,
+                                );
+                        }
+
+                        $receipts[ $receipt_index ]['status']       = 'completed';
+                        $receipts[ $receipt_index ]['logs']         = $line_logs;
+                        $receipts[ $receipt_index ]['completed_at'] = current_time( 'mysql' );
+                        $receipts[ $receipt_index ]['message']      = '';
+                        self::save_receipts( $po_id, $receipts );
+
+                        if ( class_exists( __NAMESPACE__ . '\Incoming_Stock_Indexer' ) ) {
+                                Incoming_Stock_Indexer::refresh_all();
+                        }
+                }
+
+                /**
+                 * Mark a receipt as failed and restore received quantities.
+                 *
+                 * @param int   $po_id
+                 * @param array $receipts
+                 * @param int   $receipt_index
+                 * @param array $errors
+                 * @param array $revert_lines idx => qty_before
+                 * @param array $po_lines
+                 */
+                protected static function mark_receipt_failed( int $po_id, array $receipts, int $receipt_index, array $errors, array $revert_lines, array $po_lines ): void {
+                        $changed = false;
+                        foreach ( $revert_lines as $idx => $prev_received ) {
+                                if ( ! isset( $po_lines[ $idx ] ) ) {
+                                        continue;
+                                }
+                                $po_lines[ $idx ]['qty_received'] = max( 0, (int) $prev_received );
+                                $changed                           = true;
+                        }
+
+                        if ( $changed ) {
+                                update_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_LINES' ) ? PO_META_LINES : '_lpr_po_lines', $po_lines );
+                                if ( class_exists( __NAMESPACE__ . '\Incoming_Stock_Indexer' ) ) {
+                                        Incoming_Stock_Indexer::refresh_all();
+                                }
+                        }
+
+                        $receipts[ $receipt_index ]['status']  = 'failed';
+                        $receipts[ $receipt_index ]['message'] = implode( ' ', array_unique( array_map( 'wp_strip_all_tags', $errors ) ) );
+                        self::save_receipts( $po_id, $receipts );
+                }
+
+                /**
+                 * Build PO line payload for the modal.
+                 *
+                 * @param int $po_id
+                 * @return array<int, array<string, mixed>>
+                 */
+                protected static function collect_lines( int $po_id ): array {
+                        $raw = get_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_LINES' ) ? PO_META_LINES : '_lpr_po_lines', true );
+                        if ( ! is_array( $raw ) ) {
+                                return array();
+                        }
+
+                        $out = array();
+                        foreach ( $raw as $idx => $line ) {
+                                $ordered  = isset( $line['qty_ordered'] ) ? max( 0, (int) $line['qty_ordered'] ) : 0;
+                                $received = isset( $line['qty_received'] ) ? max( 0, (int) $line['qty_received'] ) : 0;
+                                $target   = isset( $line['variation_id'] ) && (int) $line['variation_id'] > 0 ? (int) $line['variation_id'] : (int) ( $line['product_id'] ?? 0 );
+                                if ( $ordered <= 0 || $target <= 0 ) {
+                                        continue;
+                                }
+
+                                $product = function_exists( 'wc_get_product' ) ? wc_get_product( $target ) : null;
+                                $label   = $product ? lpr_allocator_product_option_label( $target ) : '#' . $target;
+                                $label   = wp_strip_all_tags( $label );
+                                $stock   = null;
+                                if ( $product instanceof \WC_Product ) {
+                                        $stock = function_exists( 'wc_stock_amount' ) ? wc_stock_amount( $product->get_stock_quantity() ) : (int) $product->get_stock_quantity();
+                                }
+
+                                $out[] = array(
+                                        'idx'       => (int) $idx,
+                                        'product'   => esc_html( $label ),
+                                        'ordered'   => $ordered,
+                                        'received'  => $received,
+                                        'stock'     => $stock,
+                                        'remaining' => max( 0, $ordered - $received ),
+                                );
+                        }
+
+                        return $out;
+                }
+
+                /**
+                 * AJAX: fetch modal rows with live stock.
+                 */
+                public static function ajax_lines(): void {
+                        $po_id = isset( $_POST['po_id'] ) ? absint( $_POST['po_id'] ) : 0;
+                        $nonce = isset( $_POST['nonce'] ) ? (string) wp_unslash( $_POST['nonce'] ) : '';
+                        if ( ! $po_id || ! wp_verify_nonce( $nonce, 'lpr_receive_po_' . $po_id ) ) {
+                                wp_send_json_error( array( 'message' => __( 'Invalid request.', 'lpr-backorder-allocator' ) ) );
+                        }
+                        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+                                wp_send_json_error( array( 'message' => __( 'Insufficient permissions.', 'lpr-backorder-allocator' ) ) );
+                        }
+
+                        $post = get_post( $po_id );
+                        if ( ! ( $post instanceof \WP_Post ) || ( defined( __NAMESPACE__ . '\CPT_SUPPLIER_PO' ) ? CPT_SUPPLIER_PO : 'supplier_po' ) !== $post->post_type ) {
+                                wp_send_json_error( array( 'message' => __( 'PO not found.', 'lpr-backorder-allocator' ) ) );
+                        }
+
+                        $lines = self::collect_lines( $po_id );
+                        wp_send_json_success( array( 'lines' => $lines ) );
+                }
+
+                /**
+                 * AJAX: apply received quantities and queue inventory adjustments via Action Scheduler.
+                 */
+                public static function ajax_apply(): void {
+                        $po_id = isset( $_POST['po_id'] ) ? absint( $_POST['po_id'] ) : 0;
+                        $nonce = isset( $_POST['nonce'] ) ? (string) wp_unslash( $_POST['nonce'] ) : '';
+                        if ( ! $po_id || ! wp_verify_nonce( $nonce, 'lpr_receive_po_' . $po_id ) ) {
+                                wp_send_json_error( array( 'message' => __( 'Invalid request.', 'lpr-backorder-allocator' ) ) );
+                        }
+                        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+                                wp_send_json_error( array( 'message' => __( 'Insufficient permissions.', 'lpr-backorder-allocator' ) ) );
+                        }
+
+                        $post = get_post( $po_id );
+                        if ( ! ( $post instanceof \WP_Post ) || ( defined( __NAMESPACE__ . '\CPT_SUPPLIER_PO' ) ? CPT_SUPPLIER_PO : 'supplier_po' ) !== $post->post_type ) {
+                                wp_send_json_error( array( 'message' => __( 'PO not found.', 'lpr-backorder-allocator' ) ) );
+                        }
+
+                        if ( ! function_exists( 'as_enqueue_async_action' ) && ! function_exists( 'as_schedule_single_action' ) ) {
+                                wp_send_json_error( array( 'message' => __( 'Action Scheduler is required to receive stock.', 'lpr-backorder-allocator' ) ) );
+                        }
+
+                        $submitted = isset( $_POST['lines'] ) ? (array) $_POST['lines'] : array();
+                        $lines     = get_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_LINES' ) ? PO_META_LINES : '_lpr_po_lines', true );
+                        if ( ! is_array( $lines ) ) {
+                                $lines = array();
+                        }
+
+                        $changed        = false;
+                        $errors         = array();
+                        $receipt_lines  = array();
+                        foreach ( $submitted as $idx => $qty ) {
+                                $idx = (int) $idx;
+                                if ( ! isset( $lines[ $idx ] ) ) {
+                                        continue;
+                                }
+                                $qty_now  = max( 0, (int) $qty );
+                                $ordered  = isset( $lines[ $idx ]['qty_ordered'] ) ? max( 0, (int) $lines[ $idx ]['qty_ordered'] ) : 0;
+                                $received = isset( $lines[ $idx ]['qty_received'] ) ? max( 0, (int) $lines[ $idx ]['qty_received'] ) : 0;
+                                if ( $ordered <= 0 || $qty_now <= 0 ) {
+                                        continue;
+                                }
+                                $remaining = max( 0, $ordered - $received );
+                                if ( $remaining <= 0 ) {
+                                        continue;
+                                }
+
+                                if ( $qty_now > $remaining ) {
+                                        $label = isset( $lines[ $idx ]['product_id'] ) ? (string) $lines[ $idx ]['product_id'] : (string) $idx;
+                                        if ( isset( $lines[ $idx ]['variation_id'] ) && (int) $lines[ $idx ]['variation_id'] > 0 ) {
+                                                $label = (string) $lines[ $idx ]['variation_id'];
+                                        }
+                                        $errors[] = sprintf(
+                                                /* translators: 1: product identifier, 2: remaining quantity */
+                                                __( 'Line %1$s exceeds the remaining quantity (%2$d).', 'lpr-backorder-allocator' ),
+                                                esc_html( $label ),
+                                                $remaining
+                                        );
+                                        continue;
+                                }
+
+                                $lines[ $idx ]['qty_received'] = $received + $qty_now;
+                                $changed                       = true;
+
+                                $receipt_lines[] = array(
+                                        'idx'          => $idx,
+                                        'product_id'   => (int) ( $lines[ $idx ]['product_id'] ?? 0 ),
+                                        'variation_id' => (int) ( $lines[ $idx ]['variation_id'] ?? 0 ),
+                                        'qty_ordered'  => $ordered,
+                                        'qty_before'   => $received,
+                                        'qty'          => $qty_now,
+                                );
+                        }
+
+                        if ( ! empty( $errors ) ) {
+                                wp_send_json_error(
+                                        array(
+                                                'message' => __( 'Quantities cannot exceed the remaining ordered amount.', 'lpr-backorder-allocator' ),
+                                                'details' => $errors,
+                                                'lines'   => self::collect_lines( $po_id ),
+                                        )
+                                );
+                        }
+
+                        if ( empty( $receipt_lines ) ) {
+                                wp_send_json_error(
+                                        array(
+                                                'message' => __( 'No quantities were provided.', 'lpr-backorder-allocator' ),
+                                                'lines'   => self::collect_lines( $po_id ),
+                                        )
+                                );
+                        }
+
+                        $receipt_id = uniqid( 'rcpt_', true );
+                        $receipt    = array(
+                                'id'          => $receipt_id,
+                                'status'      => 'pending',
+                                'created_at'  => current_time( 'mysql' ),
+                                'created_gmt' => current_time( 'mysql', true ),
+                                'created_by'  => get_current_user_id(),
+                                'action_id'   => null,
+                                'lines'       => $receipt_lines,
+                                'logs'        => array(),
+                                'message'     => '',
+                        );
+
+                        $action_id = self::enqueue_action( $po_id, $receipt_id );
+                        if ( ! $action_id ) {
+                                foreach ( $receipt_lines as $line ) {
+                                        $idx = (int) $line['idx'];
+                                        if ( isset( $lines[ $idx ] ) ) {
+                                                $lines[ $idx ]['qty_received'] = $line['qty_before'];
+                                        }
+                                }
+                                update_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_LINES' ) ? PO_META_LINES : '_lpr_po_lines', $lines );
+                                wp_send_json_error(
+                                        array(
+                                                'message' => __( 'Unable to queue the receipt. Please retry.', 'lpr-backorder-allocator' ),
+                                                'lines'   => self::collect_lines( $po_id ),
+                                        )
+                                );
+                        }
+
+                        $receipt['action_id'] = (int) $action_id;
+
+                        if ( $changed ) {
+                                update_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_LINES' ) ? PO_META_LINES : '_lpr_po_lines', $lines );
+                        }
+
+                        $receipts   = self::get_receipts( $po_id );
+                        $receipts[] = $receipt;
+                        self::save_receipts( $po_id, $receipts );
+
+                        if ( class_exists( __NAMESPACE__ . '\Incoming_Stock_Indexer' ) ) {
+                                Incoming_Stock_Indexer::refresh_all();
+                        }
+
+                        // Run the receipt immediately to ensure inventory is updated even before the async worker runs.
+                        self::process_receipt( $po_id, $receipt_id );
+
+                        $message = __( 'Receipt queued. Stock will update asynchronously.', 'lpr-backorder-allocator' );
+                        wp_send_json_success(
+                                array(
+                                        'message' => $message,
+                                        'lines'   => self::collect_lines( $po_id ),
+                                )
+                        );
+                }
+        }
+        PO_Receive_Stock_UI::init();
 }
 
 if ( ! class_exists( __NAMESPACE__ . '\PO_Allocation_Overview' ) ) {
