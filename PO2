@@ -7868,15 +7868,28 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Orders_Page' ) ) {
                                                 'status'                 => isset( $row['status'] ) ? (string) $row['status'] : '',
                                                 'customer'               => isset( $row['customer'] ) ? (string) $row['customer'] : '',
                                                 'currency'               => isset( $row['currency'] ) ? (string) $row['currency'] : '',
+                                                'customer_email'         => isset( $row['customer_email'] ) ? sanitize_email( (string) $row['customer_email'] ) : '',
+                                                'latest_eta'             => '',
                                                 'rows'                   => array(),
                                                 'outstanding_backorder'  => 0,
                                                 'has_backorder_line'     => false,
                                         );
                                 }
 
+                                if ( '' === $orders[ $oid ]['customer_email'] && ! empty( $row['customer_email'] ) ) {
+                                        $orders[ $oid ]['customer_email'] = sanitize_email( (string) $row['customer_email'] );
+                                }
+
                                 $orders[ $oid ]['rows'][] = $row;
                                 $orders[ $oid ]['outstanding_backorder'] += isset( $row['qty_backordered'] ) ? (int) $row['qty_backordered'] : 0;
                                 $orders[ $oid ]['has_backorder_line']    = $orders[ $oid ]['has_backorder_line'] || ! empty( $row['is_backorder_line'] );
+
+                                if ( ! empty( $row['is_backorder_line'] ) && ! empty( $row['eta'] ) ) {
+                                        $eta = lpr_allocator_sanitize_ymd( (string) $row['eta'] );
+                                        if ( $eta && ( '' === $orders[ $oid ]['latest_eta'] || $eta > $orders[ $oid ]['latest_eta'] ) ) {
+                                                $orders[ $oid ]['latest_eta'] = $eta;
+                                        }
+                                }
                         }
 
                         uasort(
@@ -7920,30 +7933,59 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Orders_Page' ) ) {
                         return number_format_i18n( $amount, 2 ) . ' ' . esc_html( $currency );
                 }
 
-                protected static function email_link( array $row ): string {
-                        $email = isset( $row['customer_email'] ) ? sanitize_email( (string) $row['customer_email'] ) : '';
+                protected static function email_link( array $order ): string {
+                        $email = isset( $order['customer_email'] ) ? sanitize_email( (string) $order['customer_email'] ) : '';
                         if ( '' === $email ) {
                                 return '<span class="button disabled">' . esc_html__( 'Email unavailable', 'lpr-backorder-allocator' ) . '</span>';
                         }
 
-                        $eta_text = '';
-                        if ( ! empty( $row['eta'] ) ) {
-                                $eta_text = lpr_allocator_format_store_date( (string) $row['eta'] );
+                        $order_eta_text = '';
+                        if ( ! empty( $order['latest_eta'] ) ) {
+                                $order_eta_text = lpr_allocator_format_store_date( (string) $order['latest_eta'] );
                         }
-                        $eta_line = $eta_text ? sprintf( __( 'Current ETA: %s', 'lpr-backorder-allocator' ), $eta_text ) : __( 'Current ETA: not set', 'lpr-backorder-allocator' );
+                        $order_eta_line = $order_eta_text ? sprintf( __( 'Latest ETA: %s', 'lpr-backorder-allocator' ), $order_eta_text ) : __( 'Latest ETA: not set', 'lpr-backorder-allocator' );
 
-                        $body_lines = array(
-                                sprintf( __( 'Hello, here is the latest ETA for your order #%s:', 'lpr-backorder-allocator' ), (string) $row['order_number'] ),
-                                '',
-                                sprintf( __( 'Item: %1$s (Line %2$d)', 'lpr-backorder-allocator' ), (string) $row['product'], (int) $row['item_id'] ),
-                                sprintf( __( 'Ordered: %1$d – Allocated: %2$d – Backordered: %3$d', 'lpr-backorder-allocator' ), (int) $row['qty_ordered'], (int) $row['qty_allocated'], (int) $row['qty_backordered'] ),
-                                $eta_line,
+                        $line_summaries = array();
+                        if ( ! empty( $order['rows'] ) && is_array( $order['rows'] ) ) {
+                                foreach ( $order['rows'] as $row ) {
+                                        if ( empty( $row['is_backorder_line'] ) ) {
+                                                continue;
+                                        }
+
+                                        $line_eta = ! empty( $row['eta'] ) ? lpr_allocator_format_store_date( (string) $row['eta'] ) : __( 'not set', 'lpr-backorder-allocator' );
+
+                                        $line_summaries[] = sprintf(
+                                                /* translators: 1: order line id, 2: product name, 3: ordered qty, 4: allocated qty, 5: backordered qty, 6: ETA */
+                                                __( 'Line %1$d – %2$s – Ordered: %3$d – Allocated: %4$d – Backordered: %5$d – ETA: %6$s', 'lpr-backorder-allocator' ),
+                                                isset( $row['item_id'] ) ? (int) $row['item_id'] : 0,
+                                                isset( $row['product'] ) ? (string) $row['product'] : '',
+                                                isset( $row['qty_ordered'] ) ? (int) $row['qty_ordered'] : 0,
+                                                isset( $row['qty_allocated'] ) ? (int) $row['qty_allocated'] : 0,
+                                                isset( $row['qty_backordered'] ) ? (int) $row['qty_backordered'] : 0,
+                                                $line_eta
+                                        );
+                                }
+                        }
+
+                        if ( empty( $line_summaries ) ) {
+                                $line_summaries[] = __( 'No backordered line items are currently listed for this order.', 'lpr-backorder-allocator' );
+                        }
+
+                        $body_lines = array_merge(
+                                array(
+                                        sprintf( __( 'Hello, here is the latest ETA for your order #%s:', 'lpr-backorder-allocator' ), (string) $order['order_number'] ),
+                                        '',
+                                        $order_eta_line,
+                                        '',
+                                        __( 'Line details:', 'lpr-backorder-allocator' ),
+                                ),
+                                $line_summaries
                         );
 
                         $mailto = sprintf(
                                 'mailto:%1$s?subject=%2$s&body=%3$s',
                                 rawurlencode( $email ),
-                                rawurlencode( sprintf( __( 'Updated ETAs for order #%s', 'lpr-backorder-allocator' ), (string) $row['order_number'] ) ),
+                                rawurlencode( sprintf( __( 'Updated ETAs for order #%s', 'lpr-backorder-allocator' ), (string) $order['order_number'] ) ),
                                 rawurlencode( implode( "\r\n", $body_lines ) )
                         );
 
@@ -8048,6 +8090,35 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Orders_Page' ) ) {
                                                 background: #f6f7f7;
                                         }
 
+                                        .lpr-order-card__left {
+                                                flex: 1;
+                                                min-width: 0;
+                                        }
+
+                                        .lpr-order-card__title-row {
+                                                display: flex;
+                                                align-items: center;
+                                                gap: 12px;
+                                                flex-wrap: wrap;
+                                                justify-content: space-between;
+                                        }
+
+                                        .lpr-order-card__title {
+                                                display: flex;
+                                                align-items: center;
+                                                gap: 10px;
+                                                flex-wrap: wrap;
+                                        }
+
+                                        .lpr-order-card__eta {
+                                                color: #50575e;
+                                                font-size: 13px;
+                                        }
+
+                                        .lpr-order-card__actions .button {
+                                                margin: 0;
+                                        }
+
                                         .lpr-order-card__meta {
                                                 margin-top: 4px;
                                                 color: #50575e;
@@ -8088,11 +8159,22 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Orders_Page' ) ) {
                                                 $outstanding  = isset( $order['outstanding_backorder'] ) ? (int) $order['outstanding_backorder'] : 0;
                                                 $order_badge  = $outstanding > 0 ? 'lpr-badge lpr-badge-warning' : 'lpr-badge lpr-badge-success';
                                                 $order_label  = $outstanding > 0 ? sprintf( __( 'Backordered qty outstanding: %d', 'lpr-backorder-allocator' ), $outstanding ) : __( 'Fully allocated', 'lpr-backorder-allocator' );
+                                                $order_eta    = ! empty( $order['latest_eta'] ) ? lpr_allocator_format_store_date( (string) $order['latest_eta'] ) : '';
+                                                $order_eta_h  = $order_eta ? sprintf( __( 'ETA: %s', 'lpr-backorder-allocator' ), $order_eta ) : __( 'ETA: not set', 'lpr-backorder-allocator' );
+                                                $email_link   = self::email_link( $order );
                                                 ?>
                                                 <div class="lpr-order-card">
                                                         <div class="lpr-order-card__header">
-                                                                <div>
-                                                                        <h2 style="margin:0; font-size:16px;"><?php echo wp_kses_post( $order_link ); ?></h2>
+                                                                <div class="lpr-order-card__left">
+                                                                        <div class="lpr-order-card__title-row">
+                                                                                <div class="lpr-order-card__title">
+                                                                                        <h2 style="margin:0; font-size:16px;"><?php echo wp_kses_post( $order_link ); ?></h2>
+                                                                                        <span class="lpr-order-card__eta"><?php echo esc_html( $order_eta_h ); ?></span>
+                                                                                </div>
+                                                                                <div class="lpr-order-card__actions">
+                                                                                        <?php echo wp_kses_post( $email_link ); ?>
+                                                                                </div>
+                                                                        </div>
                                                                         <div class="lpr-order-card__meta">
                                                                                 <?php echo esc_html( $order['order_date'] ); ?> &bull; <?php echo esc_html( $order['status'] ); ?>
                                                                                 <?php if ( ! empty( $order['customer'] ) ) : ?>
@@ -8117,7 +8199,6 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Orders_Page' ) ) {
                                                                                         <th><?php echo esc_html__( 'Line ETA', 'lpr-backorder-allocator' ); ?></th>
                                                                                         <th><?php echo esc_html__( 'Allocation Source', 'lpr-backorder-allocator' ); ?></th>
                                                                                         <th><?php echo esc_html__( 'Allocation Status', 'lpr-backorder-allocator' ); ?></th>
-                                                                                        <th><?php echo esc_html__( 'Customer Communication', 'lpr-backorder-allocator' ); ?></th>
                                                                                 </tr>
                                                                         </thead>
                                                                         <tbody>
@@ -8151,7 +8232,6 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Orders_Page' ) ) {
                                                                                                 <td><?php echo $eta ? esc_html( $eta ) : '&#8211;'; ?></td>
                                                                                                 <td><?php echo esc_html( (string) $row['allocation'] ); ?></td>
                                                                                                 <td><?php echo esc_html( (string) $row['allocation_label'] ); ?></td>
-                                                                                                <td><?php echo wp_kses_post( self::email_link( $row ) ); ?></td>
                                                                                         </tr>
                                                                                 <?php endforeach; ?>
                                                                         </tbody>
