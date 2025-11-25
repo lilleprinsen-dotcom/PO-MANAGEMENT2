@@ -4457,7 +4457,7 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                  * Build a FIFO queue of order items needing allocation for a given product/variation.
                  * Sorted by requested ready-by date (ASAP first, then earliest ready_by), then paid date ASC (fallback created),
                  * then created ASC, then order ID ASC.
-                 * Uses server-side pagination and stops once the sum of need >= required_total or no more orders.
+                 * Always evaluates every eligible order (paginated) so prioritisation is not biased by creation time.
                  *
                  * @param int    $target_id
                  * @param int    $required_total
@@ -4471,15 +4471,14 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                                 $statuses[] = 'wc-' . preg_replace( '/^wc-/', '', sanitize_key( $st ) );
                         }
 
-			$queue = array();
-			$page  = 1;
-			$limit = 50;
-			$total_need_collected = 0;
+                        $queue = array();
+                        $page  = 1;
+                        $limit = 50;
 
-			do {
-				$args = array(
-					'status'  => $statuses,
-					'limit'   => $limit,
+                        do {
+                                $args = array(
+                                        'status'  => $statuses,
+                                        'limit'   => $limit,
 					'page'    => $page,
 					'orderby' => 'date', // created date ASC. We'll re-sort by paid date later.
 					'order'   => 'ASC',
@@ -4487,18 +4486,15 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
 					'type'    => 'shop_order',
 				);
 				$order_ids = function_exists( 'wc_get_orders' ) ? wc_get_orders( $args ) : array();
-				if ( empty( $order_ids ) ) {
-					break;
-				}
+                                if ( empty( $order_ids ) ) {
+                                        break;
+                                }
 
-				foreach ( $order_ids as $oid ) {
-					if ( $total_need_collected >= $required_total ) {
-						break 2; // enough candidates gathered
-					}
-					$order = wc_get_order( $oid );
-					if ( ! ( $order instanceof \WC_Order ) ) {
-						continue;
-					}
+                                foreach ( $order_ids as $oid ) {
+                                        $order = wc_get_order( $oid );
+                                        if ( ! ( $order instanceof \WC_Order ) ) {
+                                                continue;
+                                        }
                                         $paid     = $order->get_date_paid();
                                         $created  = $order->get_date_created();
                                         $paid_ts  = $paid ? (int) $paid->getTimestamp() : null;
@@ -4550,15 +4546,11 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                                                         'ready_by'   => $ready_by,
                                                         'backorder_lines' => $backorder_lines,
                                                 );
-                                                $total_need_collected += (int) $need;
-                                                if ( $total_need_collected >= $required_total ) {
-                                                        break 2;
-                                                }
                                         }
-				}
+                                }
 
-				$page++;
-			} while ( true );
+                                $page++;
+                        } while ( true );
 
 			if ( empty( $queue ) ) {
 				return array();
