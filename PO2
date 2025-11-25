@@ -7517,9 +7517,6 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Order_Indexer' ) ) {
                                                 }
 
                                                 $desired = lpr_allocator_calc_backorder_desired( $item );
-                                                if ( $desired <= 0 ) {
-                                                        continue; // not a backordered line
-                                                }
 
                                                 $allocated     = lpr_allocator_get_item_allocated_active( $item );
                                                 $backordered   = max( 0, $desired - $allocated );
@@ -7648,67 +7645,6 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Orders_Page' ) ) {
                         );
                 }
 
-                protected static function filter_orders( array $orders, string $view ): array {
-                        $out = array();
-
-                        foreach ( $orders as $order ) {
-                                $has_backorder = false;
-
-                                foreach ( $order['rows'] as $row ) {
-                                        if ( isset( $row['qty_backordered'] ) && (int) $row['qty_backordered'] > 0 ) {
-                                                $has_backorder = true;
-                                                break;
-                                        }
-                                }
-
-                                if ( 'unallocated' === $view && ! $has_backorder ) {
-                                        continue;
-                                }
-
-                                if ( 'allocated' === $view && $has_backorder ) {
-                                        continue;
-                                }
-
-                                $out[] = $order;
-                        }
-
-                        return $out;
-                }
-
-                protected static function group_rows_by_order( array $rows ): array {
-                        $orders = array();
-
-                        foreach ( $rows as $row ) {
-                                $order_id = isset( $row['order_id'] ) ? (int) $row['order_id'] : 0;
-                                if ( $order_id <= 0 ) {
-                                        continue;
-                                }
-
-                                if ( ! isset( $orders[ $order_id ] ) ) {
-                                        $orders[ $order_id ] = array(
-                                                'order_id'       => $order_id,
-                                                'order_number'   => isset( $row['order_number'] ) ? (string) $row['order_number'] : '',
-                                                'order_url'      => isset( $row['order_url'] ) ? (string) $row['order_url'] : '',
-                                                'order_date_ts'  => isset( $row['order_date_ts'] ) ? (int) $row['order_date_ts'] : 0,
-                                                'order_date'     => isset( $row['order_date'] ) ? (string) $row['order_date'] : '',
-                                                'status'         => isset( $row['status'] ) ? (string) $row['status'] : '',
-                                                'customer'       => isset( $row['customer'] ) ? (string) $row['customer'] : '',
-                                                'customer_email' => isset( $row['customer_email'] ) ? (string) $row['customer_email'] : '',
-                                                'rows'           => array(),
-                                        );
-                                }
-
-                                $orders[ $order_id ]['rows'][] = $row;
-                        }
-
-                        uasort(
-                                $orders,
-                                static function ( $a, $b ) {
-                                        return ( $a['order_date_ts'] ?? 0 ) <=> ( $b['order_date_ts'] ?? 0 );
-                                }
-                        );
-
-                        return array_values( $orders );
                 protected static function filter_rows( array $rows, string $view ): array {
                         $out = array();
 
@@ -7776,18 +7712,17 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Orders_Page' ) ) {
                                 $view = 'all';
                         }
 
-                        $idx        = class_exists( __NAMESPACE__ . '\Backorder_Order_Indexer' ) ? Backorder_Order_Indexer::get_index( false ) : array( 'built_at' => 0, 'rows' => array() );
-                        $built_ts   = isset( $idx['built_at'] ) ? (int) $idx['built_at'] : 0;
-                        $rows_all   = isset( $idx['rows'] ) && is_array( $idx['rows'] ) ? $idx['rows'] : array();
-                        $orders_all = self::group_rows_by_order( $rows_all );
-                        $orders_view = self::filter_orders( $orders_all, $view );
+                        $idx       = class_exists( __NAMESPACE__ . '\Backorder_Order_Indexer' ) ? Backorder_Order_Indexer::get_index( false ) : array( 'built_at' => 0, 'rows' => array() );
+                        $built_ts  = isset( $idx['built_at'] ) ? (int) $idx['built_at'] : 0;
+                        $rows_all  = isset( $idx['rows'] ) && is_array( $idx['rows'] ) ? $idx['rows'] : array();
+                        $rows_view = self::filter_rows( $rows_all, $view );
 
                         $page     = isset( $_GET['paged'] ) ? max( 1, (int) $_GET['paged'] ) : 1; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
                         $per_page = 25;
-                        $total    = count( $orders_view );
+                        $total    = count( $rows_view );
                         $pages    = max( 1, (int) ceil( $total / $per_page ) );
                         $offset   = ( $page - 1 ) * $per_page;
-                        $subset   = array_slice( $orders_view, $offset, $per_page );
+                        $subset   = array_slice( $rows_view, $offset, $per_page );
 
                         $rebuild_url = wp_nonce_url(
                                 add_query_arg(
@@ -7845,12 +7780,6 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Orders_Page' ) ) {
                                                 color: #a15c00;
                                                 border: 1px solid #a15c00;
                                         }
-                                        .lpr-badge-danger {
-                                                background: #fdecef;
-                                                color: #b71c1c;
-                                                border: 1px solid #b71c1c;
-                                                margin-left: 6px;
-                                        }
                                 </style>
 
                                 <p>
@@ -7887,64 +7816,10 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Orders_Page' ) ) {
                                         </thead>
                                         <tbody>
                                                 <?php if ( empty( $subset ) ) : ?>
-                                                        <tr><td colspan="14"><?php echo esc_html__( 'No orders found for this view.', 'lpr-backorder-allocator' ); ?></td></tr>
                                                         <tr><td colspan="14"><?php echo esc_html__( 'No order lines found for this view.', 'lpr-backorder-allocator' ); ?></td></tr>
                                                 <?php else : ?>
-                                                        <?php foreach ( $subset as $order ) : ?>
+                                                        <?php foreach ( $subset as $row ) : ?>
                                                                 <?php
-                                                                $order_link = ! empty( $order['order_url'] ) ? '<a href="' . esc_url( $order['order_url'] ) . '">#' . esc_html( $order['order_number'] ) . '</a>' : '#' . esc_html( $order['order_number'] );
-                                                                $first_line = true;
-                                                                ?>
-
-                                                                <?php foreach ( $order['rows'] as $row ) : ?>
-                                                                        <?php
-                                                                        $eta                 = ! empty( $row['eta'] ) ? lpr_allocator_format_store_date( (string) $row['eta'] ) : '';
-                                                                        $backordered         = isset( $row['qty_backordered'] ) ? (int) $row['qty_backordered'] : 0;
-                                                                        $backordered_display = $backordered > 0 ? '<strong>' . esc_html( (string) $backordered ) . '</strong>' : esc_html( (string) $backordered );
-                                                                        $has_allocation      = isset( $row['qty_allocated'] ) ? ( (int) $row['qty_allocated'] > 0 ) : false;
-                                                                        $row_class           = $backordered > 0 ? ' class="lpr-backorder-row"' : '';
-                                                                        $allocation_badge    = '';
-                                                                        $backorder_badge     = $backordered > 0 ? '<span class="lpr-badge lpr-badge-danger">' . esc_html__( 'Backordered', 'lpr-backorder-allocator' ) . '</span>' : '';
-
-                                                                        if ( $backordered > 0 ) {
-                                                                                $badge_class     = $has_allocation ? 'lpr-badge lpr-badge-success' : 'lpr-badge lpr-badge-warning';
-                                                                                $badge_label     = $has_allocation ? __( 'Allocated', 'lpr-backorder-allocator' ) : __( 'Not allocated', 'lpr-backorder-allocator' );
-                                                                                $allocation_badge = '<span class="' . esc_attr( $badge_class ) . '">' . esc_html( $badge_label ) . '</span>';
-                                                                        }
-
-                                                                        $order_cell    = $first_line ? $order_link : '';
-                                                                        $date_cell     = $first_line ? $order['order_date'] : '';
-                                                                        $status_cell   = $first_line ? $order['status'] : '';
-                                                                        $customer_cell = $first_line ? $order['customer'] : '';
-                                                                        $email_cell    = $first_line ? self::email_link( $row ) : '';
-                                                                        $product_cell  = esc_html( $row['product'] );
-                                                                        if ( $backorder_badge ) {
-                                                                                $product_cell .= ' ' . $backorder_badge;
-                                                                        }
-                                                                        ?>
-                                                                        <tr<?php echo $row_class; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>>
-                                                                                <td><?php echo wp_kses_post( $order_cell ); ?></td>
-                                                                                <td><?php echo esc_html( $date_cell ); ?></td>
-                                                                                <td><?php echo esc_html( $status_cell ); ?></td>
-                                                                                <td><?php echo esc_html( $customer_cell ); ?></td>
-                                                                                <td><?php echo esc_html( (string) $row['item_id'] ); ?></td>
-                                                                                <td><?php echo wp_kses_post( $product_cell ); ?></td>
-                                                                                <td class="num"><?php echo esc_html( (string) $row['qty_ordered'] ); ?></td>
-                                                                                <td class="num"><?php echo esc_html( (string) $row['qty_allocated'] ); ?></td>
-                                                                                <td class="num"><?php echo wp_kses_post( $backordered_display ); ?></td>
-                                                                                <td class="num"><?php echo wp_kses_post( self::format_money( (float) $row['line_value'], (string) $row['currency'] ) ); ?></td>
-                                                                                <td><?php echo $eta ? esc_html( $eta ) : '&#8211;'; ?></td>
-                                                                                <td><?php echo esc_html( (string) $row['allocation'] ); ?></td>
-                                                                                <td>
-                                                                                        <?php echo esc_html( (string) $row['allocation_label'] ); ?>
-                                                                                        <?php if ( $allocation_badge ) : ?>
-                                                                                                <div style="margin-top:4px;"> <?php echo wp_kses_post( $allocation_badge ); ?> </div>
-                                                                                        <?php endif; ?>
-                                                                                </td>
-                                                                                <td><?php echo wp_kses_post( $email_cell ); ?></td>
-                                                                        </tr>
-                                                                        <?php $first_line = false; ?>
-                                                                <?php endforeach; ?>
                                                                 $order_link          = ! empty( $row['order_url'] ) ? '<a href="' . esc_url( $row['order_url'] ) . '">#' . esc_html( $row['order_number'] ) . '</a>' : '#' . esc_html( $row['order_number'] );
                                                                 $eta                 = ! empty( $row['eta'] ) ? lpr_allocator_format_store_date( (string) $row['eta'] ) : '';
                                                                 $backordered         = isset( $row['qty_backordered'] ) ? (int) $row['qty_backordered'] : 0;
@@ -7987,7 +7862,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Orders_Page' ) ) {
 
                                 <?php if ( $pages > 1 ) : ?>
                                         <div class="tablenav-pages">
-                                                <span class="displaying-num"><?php echo esc_html( sprintf( _n( '%s order', '%s orders', $total, 'lpr-backorder-allocator' ), number_format_i18n( $total ) ) ); ?></span>
+                                                <span class="displaying-num"><?php echo esc_html( sprintf( _n( '%s item', '%s items', $total, 'lpr-backorder-allocator' ), number_format_i18n( $total ) ) ); ?></span>
                                                 <span class="pagination-links">
                                                         <?php
                                                         $base_url = admin_url( 'admin.php?page=lpr-backorder-orders&view=' . $view . '&paged=%#%' );
