@@ -17,7 +17,10 @@ if ( ! defined( __NAMESPACE__ . '\OPTION_KEY' ) ) {
 	define( __NAMESPACE__ . '\OPTION_KEY', 'lpr_allocator_settings' );
 }
 if ( ! defined( __NAMESPACE__ . '\DB_VERSION_OPTION' ) ) {
-	define( __NAMESPACE__ . '\DB_VERSION_OPTION', 'lpr_allocator_db_version' );
+        define( __NAMESPACE__ . '\DB_VERSION_OPTION', 'lpr_allocator_db_version' );
+}
+if ( ! defined( __NAMESPACE__ . '\ADMIN_MENU_SLUG' ) ) {
+        define( __NAMESPACE__ . '\ADMIN_MENU_SLUG', 'lpr-backorder-allocator' );
 }
 
 /**
@@ -226,7 +229,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Admin_Settings_Tab' ) ) {
 	/**
 	 * WooCommerce -> Settings -> Backorders tab.
 	 */
-	class Admin_Settings_Tab {
+        class Admin_Settings_Tab {
 
 		const TAB_ID = 'lpr_backorders';
 
@@ -1071,6 +1074,49 @@ if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_touch_allocation_status'
                 }
         }
 }
+if ( ! class_exists( __NAMESPACE__ . '\Admin_Menu' ) ) {
+        /**
+         * Top-level admin menu wrapper for all plugin pages.
+         */
+        class Admin_Menu {
+
+                public static function init(): void {
+                        add_action( 'admin_menu', array( __CLASS__, 'register_menu' ), 5 );
+                }
+
+                public static function register_menu(): void {
+                        add_menu_page(
+                                __( 'PO Allocator', 'lpr-backorder-allocator' ),
+                                __( 'PO Allocator', 'lpr-backorder-allocator' ),
+                                'manage_woocommerce',
+                                ADMIN_MENU_SLUG,
+                                array( __CLASS__, 'redirect_to_default' ),
+                                'dashicons-clipboard',
+                                54
+                        );
+
+                        add_submenu_page(
+                                ADMIN_MENU_SLUG,
+                                __( 'Settings', 'lpr-backorder-allocator' ),
+                                __( 'Settings', 'lpr-backorder-allocator' ),
+                                'manage_woocommerce',
+                                ADMIN_MENU_SLUG . '-settings',
+                                array( __CLASS__, 'redirect_to_settings' )
+                        );
+                }
+
+                public static function redirect_to_default(): void {
+                        wp_safe_redirect( admin_url( 'admin.php?page=lpr-backordered-products' ) );
+                        exit;
+                }
+
+                public static function redirect_to_settings(): void {
+                        wp_safe_redirect( admin_url( 'admin.php?page=wc-settings&tab=' . Admin_Settings_Tab::TAB_ID ) );
+                        exit;
+                }
+        }
+        Admin_Menu::init();
+}
 
 if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_product_exists' ) ) {
         /**
@@ -1486,11 +1532,11 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_CPT' ) ) {
 				CPT_SUPPLIER_PO,
 				array(
 					'labels'              => $labels,
-					'public'              => false,
-					'show_ui'             => true,
-					'show_in_menu'        => 'woocommerce',
-					'show_in_admin_bar'   => false,
-					'show_in_rest'        => false,
+                                        'public'              => false,
+                                        'show_ui'             => true,
+                                        'show_in_menu'        => ADMIN_MENU_SLUG,
+                                        'show_in_admin_bar'   => false,
+                                        'show_in_rest'        => false,
 					'has_archive'         => false,
 					'exclude_from_search' => true,
 					'rewrite'             => false,
@@ -7593,7 +7639,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Orders_Page' ) ) {
 
                 public static function register_page(): void {
                         add_submenu_page(
-                                'woocommerce',
+                                ADMIN_MENU_SLUG,
                                 __( 'Backorder Orders', 'lpr-backorder-allocator' ),
                                 __( 'Backorder Orders', 'lpr-backorder-allocator' ),
                                 'manage_woocommerce',
@@ -7883,12 +7929,12 @@ if ( ! class_exists( __NAMESPACE__ . '\Backordered_Products_Page' ) ) {
 			add_action( 'admin_menu', array( __CLASS__, 'register_page' ) );
 		}
 
-		public static function register_page(): void {
-			add_submenu_page(
-				'woocommerce',
-				__( 'Backordered Products', 'lpr-backorder-allocator' ),
-				__( 'Backordered Products', 'lpr-backorder-allocator' ),
-				'manage_woocommerce',
+                public static function register_page(): void {
+                        add_submenu_page(
+                                ADMIN_MENU_SLUG,
+                                __( 'Backordered Products', 'lpr-backorder-allocator' ),
+                                __( 'Backordered Products', 'lpr-backorder-allocator' ),
+                                'manage_woocommerce',
 				'lpr-backordered-products',
 				array( __CLASS__, 'render' )
 			);
