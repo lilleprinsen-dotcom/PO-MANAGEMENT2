@@ -7517,6 +7517,9 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Order_Indexer' ) ) {
                                                 }
 
                                                 $desired = lpr_allocator_calc_backorder_desired( $item );
+                                                if ( $desired <= 0 ) {
+                                                        continue; // not a backordered line
+                                                }
 
                                                 $allocated     = lpr_allocator_get_item_allocated_active( $item );
                                                 $backordered   = max( 0, $desired - $allocated );
