@@ -7709,6 +7709,24 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Orders_Page' ) ) {
                         );
 
                         return array_values( $orders );
+                protected static function filter_rows( array $rows, string $view ): array {
+                        $out = array();
+
+                        foreach ( $rows as $row ) {
+                                $backordered = isset( $row['qty_backordered'] ) ? (int) $row['qty_backordered'] : 0;
+
+                                if ( 'unallocated' === $view && $backordered <= 0 ) {
+                                        continue;
+                                }
+
+                                if ( 'allocated' === $view && $backordered > 0 ) {
+                                        continue;
+                                }
+
+                                $out[] = $row;
+                        }
+
+                        return $out;
                 }
 
                 protected static function format_money( float $amount, string $currency ): string {
@@ -7870,6 +7888,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Orders_Page' ) ) {
                                         <tbody>
                                                 <?php if ( empty( $subset ) ) : ?>
                                                         <tr><td colspan="14"><?php echo esc_html__( 'No orders found for this view.', 'lpr-backorder-allocator' ); ?></td></tr>
+                                                        <tr><td colspan="14"><?php echo esc_html__( 'No order lines found for this view.', 'lpr-backorder-allocator' ); ?></td></tr>
                                                 <?php else : ?>
                                                         <?php foreach ( $subset as $order ) : ?>
                                                                 <?php
@@ -7926,6 +7945,41 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Orders_Page' ) ) {
                                                                         </tr>
                                                                         <?php $first_line = false; ?>
                                                                 <?php endforeach; ?>
+                                                                $order_link          = ! empty( $row['order_url'] ) ? '<a href="' . esc_url( $row['order_url'] ) . '">#' . esc_html( $row['order_number'] ) . '</a>' : '#' . esc_html( $row['order_number'] );
+                                                                $eta                 = ! empty( $row['eta'] ) ? lpr_allocator_format_store_date( (string) $row['eta'] ) : '';
+                                                                $backordered         = isset( $row['qty_backordered'] ) ? (int) $row['qty_backordered'] : 0;
+                                                                $backordered_display = $backordered > 0 ? '<strong>' . esc_html( (string) $backordered ) . '</strong>' : esc_html( (string) $backordered );
+                                                                $has_allocation      = isset( $row['qty_allocated'] ) ? ( (int) $row['qty_allocated'] > 0 ) : false;
+                                                                $row_class           = $backordered > 0 ? ' class="lpr-backorder-row"' : '';
+                                                                $badge               = '';
+
+                                                                if ( $backordered > 0 ) {
+                                                                        $badge_class = $has_allocation ? 'lpr-badge lpr-badge-success' : 'lpr-badge lpr-badge-warning';
+                                                                        $badge_label = $has_allocation ? __( 'Allocated', 'lpr-backorder-allocator' ) : __( 'Not allocated', 'lpr-backorder-allocator' );
+                                                                        $badge       = '<span class="' . esc_attr( $badge_class ) . '">' . esc_html( $badge_label ) . '</span>';
+                                                                }
+                                                                ?>
+                                                                <tr<?php echo $row_class; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>>
+                                                                        <td><?php echo wp_kses_post( $order_link ); ?></td>
+                                                                        <td><?php echo esc_html( $row['order_date'] ); ?></td>
+                                                                        <td><?php echo esc_html( $row['status'] ); ?></td>
+                                                                        <td><?php echo esc_html( $row['customer'] ); ?></td>
+                                                                        <td><?php echo esc_html( (string) $row['item_id'] ); ?></td>
+                                                                        <td><?php echo esc_html( $row['product'] ); ?></td>
+                                                                        <td class="num"><?php echo esc_html( (string) $row['qty_ordered'] ); ?></td>
+                                                                        <td class="num"><?php echo esc_html( (string) $row['qty_allocated'] ); ?></td>
+                                                                        <td class="num"><?php echo wp_kses_post( $backordered_display ); ?></td>
+                                                                        <td class="num"><?php echo wp_kses_post( self::format_money( (float) $row['line_value'], (string) $row['currency'] ) ); ?></td>
+                                                                        <td><?php echo $eta ? esc_html( $eta ) : '&#8211;'; ?></td>
+                                                                        <td><?php echo esc_html( (string) $row['allocation'] ); ?></td>
+                                                                        <td>
+                                                                                <?php echo esc_html( (string) $row['allocation_label'] ); ?>
+                                                                                <?php if ( $badge ) : ?>
+                                                                                        <div style="margin-top:4px;"> <?php echo wp_kses_post( $badge ); ?> </div>
+                                                                                <?php endif; ?>
+                                                                        </td>
+                                                                        <td><?php echo wp_kses_post( self::email_link( $row ) ); ?></td>
+                                                                </tr>
                                                         <?php endforeach; ?>
                                                 <?php endif; ?>
                                         </tbody>
