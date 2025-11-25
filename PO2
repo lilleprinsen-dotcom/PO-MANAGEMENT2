@@ -1003,6 +1003,7 @@ function lpr_allocator_enqueue_datepicker_assets(): void {
         }
 
         wp_enqueue_style( 'woocommerce_admin_styles' );
+        wp_enqueue_style( 'jquery-ui-theme', includes_url( 'css/jquery-ui-theme.min.css' ), array(), '1.13.2' );
         wp_enqueue_script( 'jquery-ui-datepicker' );
 
         $inline = <<<'JS'
