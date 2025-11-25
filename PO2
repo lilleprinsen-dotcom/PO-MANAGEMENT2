@@ -1436,6 +1436,94 @@ if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_reapply_po_allocations_f
         }
 }
 
+if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_remove_po_allocations_from_orders' ) ) {
+        /**
+         * Remove all allocations pointing to a PO from order items and refresh dependent data.
+         *
+         * @param int $po_id
+         * @return void
+         */
+        function lpr_allocator_remove_po_allocations_from_orders( int $po_id ): void {
+                if ( $po_id <= 0 || ! function_exists( 'wc_get_order' ) ) {
+                        return;
+                }
+
+                if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_get_po_allocation_index' ) ) {
+                        return;
+                }
+
+                $index = lpr_allocator_get_po_allocation_index( $po_id );
+                if ( empty( $index ) && function_exists( __NAMESPACE__ . '\lpr_allocator_rebuild_po_alloc_index' ) ) {
+                        $index = lpr_allocator_rebuild_po_alloc_index( $po_id );
+                }
+
+                if ( empty( $index ) ) {
+                        return;
+                }
+
+                $meta_key     = ORDER_ITEM_META_ALLOCATIONS;
+                $needs_recalc = array();
+
+                foreach ( $index as $entry ) {
+                        $order_id = isset( $entry['order_id'] ) ? absint( $entry['order_id'] ) : 0;
+                        $item_id  = isset( $entry['item_id'] ) ? absint( $entry['item_id'] ) : 0;
+
+                        if ( $order_id <= 0 || $item_id <= 0 ) {
+                                continue;
+                        }
+
+                        $order = wc_get_order( $order_id );
+                        if ( ! ( $order instanceof \WC_Order ) ) {
+                                continue;
+                        }
+
+                        $item = $order->get_item( $item_id );
+                        if ( ! ( $item instanceof \WC_Order_Item_Product ) ) {
+                                continue;
+                        }
+
+                        if ( method_exists( $item, 'read_meta_data' ) ) {
+                                $item->read_meta_data( true );
+                        }
+
+                        $allocs = $item->get_meta( $meta_key, true );
+                        if ( ! is_array( $allocs ) ) {
+                                continue;
+                        }
+
+                        $changed  = false;
+                        $filtered = array();
+                        foreach ( $allocs as $row ) {
+                                $row_po_id = isset( $row['po_id'] ) ? (int) $row['po_id'] : 0;
+                                if ( $row_po_id === $po_id ) {
+                                        $changed = true;
+                                        continue;
+                                }
+                                $filtered[] = $row;
+                        }
+
+                        if ( $changed ) {
+                                $item->update_meta_data( $meta_key, $filtered );
+                                $item->save();
+                                $needs_recalc[ $order_id ] = true;
+                        }
+                }
+
+                if ( empty( $needs_recalc ) ) {
+                        return;
+                }
+
+                foreach ( array_keys( $needs_recalc ) as $oid ) {
+                        if ( function_exists( __NAMESPACE__ . '\lpr_allocator_reapply_po_allocations_for_order' ) ) {
+                                lpr_allocator_reapply_po_allocations_for_order( (int) $oid );
+                        }
+                        if ( class_exists( __NAMESPACE__ . '\ETA' ) ) {
+                                ETA::update_line_eta( (int) $oid );
+                        }
+                }
+        }
+}
+
 add_action( 'woocommerce_order_status_changed', __NAMESPACE__ . '\lpr_allocator_reapply_po_allocations_for_order', 10, 1 );
 
 if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_CPT' ) ) {
@@ -5342,6 +5430,10 @@ if ( ! class_exists( __NAMESPACE__ . '\Auto_PO_Allocator' ) ) {
                         }
                         if ( ( defined( __NAMESPACE__ . '\\CPT_SUPPLIER_PO' ) ? CPT_SUPPLIER_PO : 'supplier_po' ) !== $post->post_type ) {
                                 return;
+                        }
+
+                        if ( function_exists( __NAMESPACE__ . '\lpr_allocator_remove_po_allocations_from_orders' ) ) {
+                                lpr_allocator_remove_po_allocations_from_orders( (int) $post_id );
                         }
 
                         self::allocate_all();
