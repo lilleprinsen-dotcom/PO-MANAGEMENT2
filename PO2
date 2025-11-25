@@ -595,13 +595,13 @@ if ( ! class_exists( __NAMESPACE__ . '\Email_Notification_Preview' ) ) {
                         $sample_rows = array(
                                 array(
                                         'name' => __( 'Sample product A', 'lpr-backorder-allocator' ),
-                                        'prev' => lpr_allocator_format_store_date( gmdate( 'Y-m-d', strtotime( '+7 days' ) ) ),
-                                        'new'  => lpr_allocator_format_store_date( gmdate( 'Y-m-d', strtotime( '+4 days' ) ) ),
+                                        'prev' => lpr_allocator_format_store_date( gmdate( 'd-m-Y', strtotime( '+7 days' ) ) ),
+                                        'new'  => lpr_allocator_format_store_date( gmdate( 'd-m-Y', strtotime( '+4 days' ) ) ),
                                 ),
                                 array(
                                         'name' => __( 'Sample product B', 'lpr-backorder-allocator' ),
-                                        'prev' => lpr_allocator_format_store_date( gmdate( 'Y-m-d', strtotime( '+15 days' ) ) ),
-                                        'new'  => lpr_allocator_format_store_date( gmdate( 'Y-m-d', strtotime( '+11 days' ) ) ),
+                                        'prev' => lpr_allocator_format_store_date( gmdate( 'd-m-Y', strtotime( '+15 days' ) ) ),
+                                        'new'  => lpr_allocator_format_store_date( gmdate( 'd-m-Y', strtotime( '+11 days' ) ) ),
                                 ),
                         );
 
@@ -896,7 +896,7 @@ if ( ! defined( __NAMESPACE__ . '\PO_META_PO_NUMBER' ) ) {
 	define( __NAMESPACE__ . '\PO_META_PO_NUMBER', '_lpr_po_number' );
 }
 if ( ! defined( __NAMESPACE__ . '\PO_META_ETA_DATE' ) ) {
-        define( __NAMESPACE__ . '\PO_META_ETA_DATE', '_lpr_eta_date' ); // Y-m-d
+        define( __NAMESPACE__ . '\PO_META_ETA_DATE', '_lpr_eta_date' ); // d-m-Y
 }
 if ( ! defined( __NAMESPACE__ . '\PO_META_LINES' ) ) {
         define( __NAMESPACE__ . '\PO_META_LINES', '_lpr_po_lines' );
@@ -917,7 +917,7 @@ if ( ! defined( __NAMESPACE__ . '\PO_STATUS_CLOSED' ) ) {
 
 if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_sanitize_ymd' ) ) {
         /**
-         * Sanitize a date string to Y-m-d or empty.
+         * Sanitize a date string to d-m-Y or empty.
          *
          * @param string $val
          * @return string
@@ -925,20 +925,99 @@ if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_sanitize_ymd' ) ) {
         function lpr_allocator_sanitize_ymd( $val ): string {
                 $val = trim( (string) $val );
                 if ( '' === $val ) {
-			return '';
-		}
-		// Accepts Y-m-d only.
-		$d = \DateTime::createFromFormat( 'Y-m-d', $val );
-		if ( $d && $d->format( 'Y-m-d' ) === $val ) {
-			return $val;
+                        return '';
                 }
+
+                $tz = function_exists( 'wp_timezone' ) ? wp_timezone() : new \DateTimeZone( 'UTC' );
+
+                $d = \DateTimeImmutable::createFromFormat( '!d-m-Y', $val, $tz );
+                if ( $d && $d->format( 'd-m-Y' ) === $val ) {
+                        return $val;
+                }
+
+                // Accept legacy Y-m-d values and normalize to d-m-Y.
+                $legacy = \DateTimeImmutable::createFromFormat( '!Y-m-d', $val, $tz );
+                if ( $legacy && $legacy->format( 'Y-m-d' ) === $val ) {
+                        return $legacy->format( 'd-m-Y' );
+                }
+
                 return '';
+        }
+}
+
+if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_parse_date' ) ) {
+        /**
+         * Parse common date strings (d-m-Y and legacy Y-m-d with optional time) in the site timezone.
+         * Returns a DateTimeImmutable or null when parsing fails.
+         *
+         * @param string $value
+         * @return \DateTimeImmutable|null
+         */
+        function lpr_allocator_parse_date( string $value ): ?\DateTimeImmutable {
+                $value = trim( $value );
+                if ( '' === $value ) {
+                        return null;
+                }
+
+                $tz      = function_exists( 'wp_timezone' ) ? wp_timezone() : new \DateTimeZone( 'UTC' );
+                $formats = array( '!d-m-Y H:i:s', '!d-m-Y H:i', '!d-m-Y', '!Y-m-d H:i:s', '!Y-m-d H:i', '!Y-m-d' );
+
+                foreach ( $formats as $format ) {
+                        $display  = ltrim( $format, '!' );
+                        $date_obj = \DateTimeImmutable::createFromFormat( $format, $value, $tz );
+
+                        if ( $date_obj && $date_obj->format( $display ) === $value ) {
+                                return $date_obj;
+                        }
+                }
+
+                return null;
+        }
+}
+
+if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_date_to_timestamp' ) ) {
+        /**
+         * Convert a date string to a Unix timestamp (0 on failure).
+         *
+         * @param string $value
+         * @return int
+         */
+        function lpr_allocator_date_to_timestamp( string $value ): int {
+                $dt = lpr_allocator_parse_date( $value );
+
+                return $dt ? (int) $dt->getTimestamp() : 0;
+        }
+}
+
+if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_compare_dates' ) ) {
+        /**
+         * Compare two date strings chronologically.
+         *
+         * @param string $a
+         * @param string $b
+         * @return int Negative when $a < $b, positive when $a > $b.
+         */
+        function lpr_allocator_compare_dates( string $a, string $b ): int {
+                $ta = lpr_allocator_date_to_timestamp( $a );
+                $tb = lpr_allocator_date_to_timestamp( $b );
+
+                if ( $ta === $tb ) {
+                        return 0;
+                }
+                if ( 0 === $ta ) {
+                        return 1;
+                }
+                if ( 0 === $tb ) {
+                        return -1;
+                }
+
+                return $ta <=> $tb;
         }
 }
 
 if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_format_store_date' ) ) {
         /**
-         * Format a stored Y-m-d (or Y-m-d H:i:s) value using the store date/time format.
+         * Format a stored d-m-Y (or d-m-Y H:i:s) value using the store date/time format.
          * Falls back to the raw input when parsing fails.
          */
         function lpr_allocator_format_store_date( string $ymd, bool $include_time = false ): string {
@@ -947,24 +1026,26 @@ if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_format_store_date' ) ) {
                         return '';
                 }
 
-                if ( function_exists( 'wc_string_to_datetime' ) && function_exists( 'wc_format_datetime' ) ) {
-                        $dt = wc_string_to_datetime( $ymd );
-                        if ( $dt instanceof \WC_DateTime ) {
+                $site_tz = function_exists( 'wp_timezone' ) ? wp_timezone() : new \DateTimeZone( 'UTC' );
+                $dt      = lpr_allocator_parse_date( $ymd );
+
+                if ( $dt instanceof \DateTimeImmutable ) {
+                        if ( class_exists( '\\WC_DateTime' ) && function_exists( 'wc_format_datetime' ) && function_exists( 'wc_date_format' ) ) {
+                                $wc_dt = new \WC_DateTime( $dt->format( 'Y-m-d H:i:s' ), $site_tz );
                                 $format = wc_date_format();
                                 if ( $include_time ) {
                                         $format .= ' ' . wc_time_format();
                                 }
-                                return wc_format_datetime( $dt, $format );
-                        }
-                }
 
-                $format = get_option( 'date_format', 'Y-m-d' );
-                $ts     = strtotime( $ymd );
-                if ( $ts ) {
+                                return wc_format_datetime( $wc_dt, $format );
+                        }
+
+                        $format = get_option( 'date_format', 'd-m-Y' );
                         if ( $include_time ) {
                                 $format .= ' ' . get_option( 'time_format', 'H:i' );
                         }
-                        return wp_date( $format, $ts );
+
+                        return wp_date( $format, $dt->getTimestamp(), $site_tz );
                 }
 
                 return $ymd;
@@ -1453,7 +1534,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_CPT' ) ) {
 			<style>
 				#lpr_po_header .lpr-grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
 				#lpr_po_header .lpr-grid .field { display:flex; flex-direction:column; }
-				#lpr_po_header input[type="text"], #lpr_po_header input[type="date"], #lpr_po_header select { max-width: 420px; }
+                                #lpr_po_header input[type="text"], #lpr_po_header select { max-width: 420px; }
 			</style>
 			<div class="lpr-grid">
 				<div class="field">
@@ -1465,8 +1546,8 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_CPT' ) ) {
 					<input type="text" id="lpr_po_number" name="lpr_po_number" value="<?php echo esc_attr( (string) $po_number ); ?>" />
 				</div>
 				<div class="field">
-					<label for="lpr_eta_date"><strong><?php echo esc_html__( 'Default ETA (Y-m-d)', 'lpr-backorder-allocator' ); ?></strong></label>
-					<input type="date" id="lpr_eta_date" name="lpr_eta_date" value="<?php echo esc_attr( (string) $eta ); ?>" pattern="\d{4}-\d{2}-\d{2}" />
+                                        <label for="lpr_eta_date"><strong><?php echo esc_html__( 'Default ETA (d-m-Y)', 'lpr-backorder-allocator' ); ?></strong></label>
+                                        <input type="text" id="lpr_eta_date" name="lpr_eta_date" value="<?php echo esc_attr( (string) $eta ); ?>" pattern="\d{2}-\d{2}-\d{4}" placeholder="DD-MM-YYYY" />
 				</div>
 				<div class="field">
 					<label for="lpr_po_status"><strong><?php echo esc_html__( 'PO Status', 'lpr-backorder-allocator' ); ?></strong></label>
@@ -1516,7 +1597,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_CPT' ) ) {
 						<th><?php echo esc_html__( 'Variation ID', 'lpr-backorder-allocator' ); ?></th>
 						<th><?php echo esc_html__( 'Qty Ordered', 'lpr-backorder-allocator' ); ?></th>
 						<th><?php echo esc_html__( 'Qty Allocated', 'lpr-backorder-allocator' ); ?></th>
-						<th><?php echo esc_html__( 'ETA Override (Y-m-d)', 'lpr-backorder-allocator' ); ?></th>
+						<th><?php echo esc_html__( 'ETA Override (d-m-Y)', 'lpr-backorder-allocator' ); ?></th>
 						<th><?php echo esc_html__( 'Qty Received', 'lpr-backorder-allocator' ); ?></th>
 						<th><?php echo esc_html__( 'Remove', 'lpr-backorder-allocator' ); ?></th>
 					</tr>
@@ -1537,7 +1618,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_CPT' ) ) {
 							<td><input type="number" min="0" step="1" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][variation_id]" value="<?php echo esc_attr( $variation_id ); ?>" /></td>
 							<td><input type="number" min="0" step="1" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][qty_ordered]" value="<?php echo esc_attr( $qty_ordered ); ?>" /></td>
 							<td><input type="number" min="0" step="1" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][qty_allocated]" value="<?php echo esc_attr( $qty_alloc ); ?>" /></td>
-							<td><input type="text" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][eta_override]" value="<?php echo esc_attr( $eta_override ); ?>" placeholder="YYYY-MM-DD" /></td>
+							<td><input type="text" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][eta_override]" value="<?php echo esc_attr( $eta_override ); ?>" placeholder="DD-MM-YYYY" /></td>
 							<td><input type="number" min="0" step="1" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][qty_received]" value="<?php echo esc_attr( $qty_recv ); ?>" /></td>
 							<td><button type="button" class="button link-delete lpr-remove-line"><?php echo esc_html__( 'Remove', 'lpr-backorder-allocator' ); ?></button></td>
 						</tr>
@@ -1578,7 +1659,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_CPT' ) ) {
 							'<td><input type="number" min="0" step="1" name="lpr_po_lines['+i+'][variation_id]" value="" /></td>'+
 							'<td><input type="number" min="0" step="1" name="lpr_po_lines['+i+'][qty_ordered]" value="0" /></td>'+
 							'<td><input type="number" min="0" step="1" name="lpr_po_lines['+i+'][qty_allocated]" value="0" /></td>'+
-							'<td><input type="text" name="lpr_po_lines['+i+'][eta_override]" value="" placeholder="YYYY-MM-DD" /></td>'+
+							'<td><input type="text" name="lpr_po_lines['+i+'][eta_override]" value="" placeholder="DD-MM-YYYY" /></td>'+
 							'<td><input type="number" min="0" step="1" name="lpr_po_lines['+i+'][qty_received]" value="0" /></td>'+
 							'<td><button type="button" class="button link-delete lpr-remove-line"><?php echo esc_js( __( 'Remove', 'lpr-backorder-allocator' ) ); ?></button></td>';
 						table.appendChild(tr);
@@ -1864,7 +1945,7 @@ if ( ! class_exists( __NAMESPACE__ . '\ETA' ) ) {
 
 		/**
 		 * Compute earliest ETA over non-released allocations for each order line
-		 * and persist to ORDER_ITEM_META_LINE_ETA (Y-m-d).
+		 * and persist to ORDER_ITEM_META_LINE_ETA (d-m-Y).
 		 *
 		 * @param int $order_id
 		 * @return void
@@ -1968,10 +2049,15 @@ public static function update_line_eta( int $order_id ): void {
 		}
 
 		$new_eta = '';
-		if ( ! empty( $etas ) ) {
-			sort( $etas, SORT_STRING ); // Y-m-d lexical sort is chronological
-			$new_eta = (string) $etas[0];
-		}
+                if ( ! empty( $etas ) ) {
+                        usort(
+                                $etas,
+                                static function ( $a, $b ) {
+                                        return lpr_allocator_compare_dates( (string) $a, (string) $b );
+                                }
+                        );
+                        $new_eta = (string) $etas[0];
+                }
 
 		$meta_key = defined( __NAMESPACE__ . '\ORDER_ITEM_META_LINE_ETA' ) ? ORDER_ITEM_META_LINE_ETA : '_lpr_line_eta';
 		$prev_eta = (string) $item->get_meta( $meta_key, true );
@@ -2468,7 +2554,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Order_VIP_Prioritizer' ) ) {
                                         return true;
                                 }
 
-                                if ( $earliest_in && ( '' === $current_earlie || strcmp( $current_earlie, $earliest_in ) > 0 ) ) {
+                                if ( $earliest_in && ( '' === $current_earlie || lpr_allocator_compare_dates( $current_earlie, $earliest_in ) > 0 ) ) {
                                         return true;
                                 }
                         }
@@ -2943,7 +3029,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Order_VIP_Prioritizer' ) ) {
                                         if ( '' === $eb ) {
                                                 return -1;
                                         }
-                                        return strcmp( $eb, $ea ); // latest first
+                                        return lpr_allocator_compare_dates( $eb, $ea ); // latest first
                                 }
                         );
 
@@ -3181,7 +3267,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Order_VIP_Prioritizer' ) ) {
                                         if ( '' === $be ) {
                                                 return -1;
                                         }
-                                        return strcmp( $ae, $be );
+                                        return lpr_allocator_compare_dates( $ae, $be );
                                 }
                         );
 
@@ -3497,7 +3583,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Order_VIP_Prioritizer' ) ) {
                                         if ( '' === $eta_row ) {
                                                 continue;
                                         }
-                                        if ( '' === $earliest || strcmp( $eta_row, $earliest ) < 0 ) {
+                                        if ( '' === $earliest || lpr_allocator_compare_dates( $eta_row, $earliest ) < 0 ) {
                                                 $earliest = $eta_row;
                                         }
                                 }
@@ -3515,7 +3601,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Order_VIP_Prioritizer' ) ) {
                                 if ( '' === $eta_row ) {
                                         continue;
                                 }
-                                if ( '' === $eta || strcmp( $eta_row, $eta ) < 0 ) {
+                                if ( '' === $eta || lpr_allocator_compare_dates( $eta_row, $eta ) < 0 ) {
                                         $eta = $eta_row;
                                 }
                         }
@@ -3579,9 +3665,9 @@ if ( ! class_exists( __NAMESPACE__ . '\Requested_Delivery_Date_Box' ) ) {
                         wp_nonce_field( 'lpr_requested_delivery', 'lpr_requested_delivery_nonce' );
 
                         echo '<p>';
-                        echo '<label for="lpr_requested_delivery"><strong>' . esc_html__( 'Requested delivery date (Y-m-d)', 'lpr-backorder-allocator' ) . '</strong></label>';
+                        echo '<label for="lpr_requested_delivery"><strong>' . esc_html__( 'Requested delivery date (d-m-Y)', 'lpr-backorder-allocator' ) . '</strong></label>';
                         echo '<br />';
-                        echo '<input type="date" id="lpr_requested_delivery" name="lpr_requested_delivery" value="' . esc_attr( lpr_allocator_sanitize_ymd( $value ) ) . '" pattern="\d{4}-\d{2}-\d{2}" />';
+                        echo '<input type="text" id="lpr_requested_delivery" name="lpr_requested_delivery" value="' . esc_attr( lpr_allocator_sanitize_ymd( $value ) ) . '" pattern="\d{2}-\d{2}-\d{4}" placeholder="DD-MM-YYYY" />';
                         echo '</p>';
                         echo '<p class="description">' . esc_html__( 'We aim to have the order ready at least 14 days before this date. Leave blank for ASAP.', 'lpr-backorder-allocator' ) . '</p>';
                 }
@@ -3663,7 +3749,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Requested_Delivery_Date_Box' ) ) {
 
 /* SELF-CHECK:
 - Added Backorder::needs_allocation(WC_Order_Item_Product) using settings order_statuses, product->backorders_allowed(), and Backordered meta / is_on_backorder($qty).
-- Added ETA::update_line_eta($order_id) to compute earliest Y-m-d ETA across non-released allocations and persist to _lpr_line_eta; hooked on order save (classic + HPOS) with re-entrancy guard.
+- Added ETA::update_line_eta($order_id) to compute earliest d-m-Y ETA across non-released allocations and persist to _lpr_line_eta; hooked on order save (classic + HPOS) with re-entrancy guard.
 - Added admin-only "Allocations & ETA" metabox for orders (classic + HPOS screen ids). Shows per-line ETA or "Unallocated" and lists allocation rows (PO #, qty, ETA, status).
 - All declarations are guarded; HPOS-safe (Woo CRUD only); no frontend hooks; no stock writes; no wildcard meta queries.
 */
@@ -3768,7 +3854,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_Live_Product_UI' ) ) {
 						<th><?php echo esc_html__( 'Product / Variation', 'lpr-backorder-allocator' ); ?></th>
 						<th><?php echo esc_html__( 'Qty Ordered', 'lpr-backorder-allocator' ); ?></th>
 						<th><?php echo esc_html__( 'Qty Allocated', 'lpr-backorder-allocator' ); ?></th>
-						<th><?php echo esc_html__( 'ETA Override (Y-m-d)', 'lpr-backorder-allocator' ); ?></th>
+						<th><?php echo esc_html__( 'ETA Override (d-m-Y)', 'lpr-backorder-allocator' ); ?></th>
 						<th><?php echo esc_html__( 'Qty Received', 'lpr-backorder-allocator' ); ?></th>
 						<th><?php echo esc_html__( 'Remove', 'lpr-backorder-allocator' ); ?></th>
 					</tr>
@@ -3810,7 +3896,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_Live_Product_UI' ) ) {
 							</td>
 							<td><input type="number" min="0" step="1" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][qty_ordered]" value="<?php echo esc_attr( (string) $qty_ordered ); ?>" /></td>
 							<td><input type="number" min="0" step="1" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][qty_allocated]" value="<?php echo esc_attr( (string) $qty_alloc ); ?>" /></td>
-							<td><input type="text" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][eta_override]" value="<?php echo esc_attr( $eta_override ); ?>" placeholder="YYYY-MM-DD" /></td>
+							<td><input type="text" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][eta_override]" value="<?php echo esc_attr( $eta_override ); ?>" placeholder="DD-MM-YYYY" /></td>
 							<td><input type="number" min="0" step="1" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][qty_received]" value="<?php echo esc_attr( (string) $qty_recv ); ?>" /></td>
 							<td><button type="button" class="button link-delete lpr-remove-line"><?php echo esc_html__( 'Remove', 'lpr-backorder-allocator' ); ?></button></td>
 						</tr>
@@ -3861,7 +3947,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_Live_Product_UI' ) ) {
 								'</td>' +
 								'<td><input type="number" min="0" step="1" name="lpr_po_lines['+i+'][qty_ordered]" value="0" /></td>' +
 								'<td><input type="number" min="0" step="1" name="lpr_po_lines['+i+'][qty_allocated]" value="0" /></td>' +
-								'<td><input type="text" name="lpr_po_lines['+i+'][eta_override]" value="" placeholder="YYYY-MM-DD" /></td>' +
+								'<td><input type="text" name="lpr_po_lines['+i+'][eta_override]" value="" placeholder="DD-MM-YYYY" /></td>' +
 								'<td><input type="number" min="0" step="1" name="lpr_po_lines['+i+'][qty_received]" value="0" /></td>' +
 								'<td><button type="button" class="button link-delete lpr-remove-line"><?php echo esc_js( __( 'Remove', 'lpr-backorder-allocator' ) ); ?></button></td>' +
 							'</tr>';
@@ -4441,7 +4527,7 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                                                         continue;
                                                 }
 
-                                                $defer_to_later_supply = $ready_by && $po_eta_for_line && strcmp( $po_eta_for_line, $ready_by ) < 0 && self::has_later_supply_within_window( $target_id, $po_eta_for_line, $ready_by );
+                                                $defer_to_later_supply = $ready_by && $po_eta_for_line && lpr_allocator_compare_dates( $po_eta_for_line, $ready_by ) < 0 && self::has_later_supply_within_window( $target_id, $po_eta_for_line, $ready_by );
                                                 if ( $defer_to_later_supply && $backorder_lines > 1 ) {
                                                         // Keep multi-product backorders in the earliest possible PO.
                                                         $defer_to_later_supply = false;
@@ -4450,7 +4536,7 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                                                         continue;
                                                 }
 
-                                                if ( $ready_by && $po_eta_for_line && strcmp( $po_eta_for_line, $ready_by ) > 0 ) {
+                                                if ( $ready_by && $po_eta_for_line && lpr_allocator_compare_dates( $po_eta_for_line, $ready_by ) > 0 ) {
                                                         // PO would arrive after the requested readiness window.
                                                         continue;
                                                 }
@@ -4490,7 +4576,7 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                                                 if ( '' === $br ) {
                                                         return 1;
                                                 }
-                                                return strcmp( $ar, $br );
+                                                return lpr_allocator_compare_dates( $ar, $br );
                                         }
 
                                         $ap = isset( $a['paid_ts'] ) && null !== $a['paid_ts'] ? (int) $a['paid_ts'] : (int) $a['created_ts'];
@@ -4524,12 +4610,12 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                                 return '';
                         }
 
-                        $ts = strtotime( $requested . ' -14 days' );
-                        if ( false === $ts ) {
+                        $ts = lpr_allocator_date_to_timestamp( $requested );
+                        if ( $ts <= 0 ) {
                                 return '';
                         }
 
-                        return gmdate( 'Y-m-d', $ts );
+                        return gmdate( 'd-m-Y', $ts - ( 14 * DAY_IN_SECONDS ) );
                 }
 
                 /**
@@ -4576,7 +4662,7 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                                         }
 
                                         $ready_by = self::requested_ready_by( $order );
-                                        if ( $ready_by && strcmp( $po_eta_for_line, $ready_by ) > 0 ) {
+                                        if ( $ready_by && lpr_allocator_compare_dates( $po_eta_for_line, $ready_by ) > 0 ) {
                                                 continue; // PO would miss readiness window.
                                         }
 
@@ -4596,7 +4682,7 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                                                         continue;
                                                 }
 
-                                                if ( strcmp( $summary['earliest_eta'], $po_eta_for_line ) <= 0 ) {
+                                                if ( lpr_allocator_compare_dates( $summary['earliest_eta'], $po_eta_for_line ) <= 0 ) {
                                                         continue; // Already as good or better.
                                                 }
 
@@ -4633,7 +4719,7 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                                         continue;
                                 }
 
-                                if ( strcmp( $eta, $po_eta_for_line ) > 0 && strcmp( $eta, $ready_by ) <= 0 && (int) ( $entry['qty_free'] ?? 0 ) > 0 ) {
+                                if ( lpr_allocator_compare_dates( $eta, $po_eta_for_line ) > 0 && lpr_allocator_compare_dates( $eta, $ready_by ) <= 0 && (int) ( $entry['qty_free'] ?? 0 ) > 0 ) {
                                         return true;
                                 }
                         }
@@ -4688,7 +4774,7 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                                         if ( '' === $ready_by ) {
                                                 continue; // only move orders that explicitly provided a requested date.
                                         }
-                                        if ( strcmp( $po_eta_for_line, $ready_by ) > 0 ) {
+                                        if ( lpr_allocator_compare_dates( $po_eta_for_line, $ready_by ) > 0 ) {
                                                 continue; // PO would miss the readiness window.
                                         }
                                         $backorder_lines = function_exists( __NAMESPACE__ . '\lpr_allocator_count_backorder_lines' ) ? lpr_allocator_count_backorder_lines( $order ) : 0;
@@ -4719,7 +4805,7 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                                                 }
 
                                                 // Only move if this PO is later (but still acceptable) than the current ETA.
-                                                if ( strcmp( $po_eta_for_line, $summary['earliest_eta'] ) <= 0 ) {
+                                                if ( lpr_allocator_compare_dates( $po_eta_for_line, $summary['earliest_eta'] ) <= 0 ) {
                                                         continue;
                                                 }
 
@@ -4788,7 +4874,7 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                                         'eta'   => $eta_row,
                                 );
 
-                                if ( '' !== $eta_row && ( '' === $summary['earliest_eta'] || strcmp( $eta_row, $summary['earliest_eta'] ) < 0 ) ) {
+                                if ( '' !== $eta_row && ( '' === $summary['earliest_eta'] || lpr_allocator_compare_dates( $eta_row, $summary['earliest_eta'] ) < 0 ) ) {
                                         $summary['earliest_eta'] = $eta_row;
                                 }
                         }
@@ -4807,7 +4893,7 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                                         if ( '' === $be ) {
                                                 return -1;
                                         }
-                                        return strcmp( $ae, $be );
+                                        return lpr_allocator_compare_dates( $ae, $be );
                                 }
                         );
 
@@ -4869,7 +4955,7 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                                                 }
 
                                                 $summary = self::active_allocation_summary( $item );
-                                                if ( $summary['total_qty'] > 0 && '' !== $summary['earliest_eta'] && strcmp( $summary['earliest_eta'], $eta_threshold ) > 0 ) {
+                                                if ( $summary['total_qty'] > 0 && '' !== $summary['earliest_eta'] && lpr_allocator_compare_dates( $summary['earliest_eta'], $eta_threshold ) > 0 ) {
                                                         return true; // could improve ETA.
                                                 }
                                         }
@@ -4985,7 +5071,7 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_FIFO_Allocator' ) ) {
                                 }
 
                                 $row_eta = isset( $row['eta'] ) ? (string) $row['eta'] : '';
-                                if ( '' !== $row_eta && '' !== $eta_to_store && strcmp( $row_eta, $eta_to_store ) <= 0 ) {
+                                if ( '' !== $row_eta && '' !== $eta_to_store && lpr_allocator_compare_dates( $row_eta, $eta_to_store ) <= 0 ) {
                                         continue; // Do not pull from allocations that already have an equal or better ETA.
                                 }
 
@@ -5138,6 +5224,20 @@ if ( ! class_exists( __NAMESPACE__ . '\Auto_PO_Allocator' ) ) {
                         $per_page = 20;
 
                         do {
+                                $orderby_filter = static function ( $orderby, $query_obj ) {
+                                        global $wpdb;
+
+                                        if ( ! $query_obj instanceof \WP_Query || ! $query_obj->get( 'lpr_eta_sort' ) ) {
+                                                return $orderby;
+                                        }
+
+                                        $meta_order = "STR_TO_DATE({$wpdb->postmeta}.meta_value, '%d-%m-%Y') ASC";
+
+                                        return implode( ', ', array( $meta_order, "{$wpdb->posts}.post_date ASC", "{$wpdb->posts}.ID ASC" ) );
+                                };
+
+                                add_filter( 'posts_orderby', $orderby_filter, 10, 2 );
+
                                 $query = new \WP_Query(
                                         array(
                                                 'post_type'      => defined( __NAMESPACE__ . '\CPT_SUPPLIER_PO' ) ? CPT_SUPPLIER_PO : 'supplier_po',
@@ -5147,15 +5247,17 @@ if ( ! class_exists( __NAMESPACE__ . '\Auto_PO_Allocator' ) ) {
                                                 'fields'         => 'ids',
                                                 'no_found_rows'  => true,
                                                 'meta_key'       => defined( __NAMESPACE__ . '\PO_META_ETA_DATE' ) ? PO_META_ETA_DATE : '_lpr_eta_date',
-                                                'meta_type'      => 'DATE',
                                                 'orderby'        => array(
                                                         'meta_value' => 'ASC',
                                                         'date'       => 'ASC',
                                                         'ID'         => 'ASC',
                                                 ),
                                                 'order'          => 'ASC',
+                                                'lpr_eta_sort'   => true,
                                         )
                                 );
+
+                                remove_filter( 'posts_orderby', $orderby_filter, 10 );
 
                                 if ( empty( $query->posts ) ) {
                                         break;
@@ -5409,7 +5511,8 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_Allocation_Overview' ) ) {
                         if ( '' === $current ) {
                                 return $candidate;
                         }
-                        return strcmp( $candidate, $current ) < 0 ? $candidate : $current;
+
+                        return lpr_allocator_compare_dates( $candidate, $current ) < 0 ? $candidate : $current;
                 }
 
                 public static function render_box( \WP_Post $post ): void {
@@ -5564,7 +5667,7 @@ if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_get_or_create_quick_po_f
                                 /* translators: 1: user display name, 2: date time */
                                 __( 'Quick PO Draft – %1$s – %2$s', 'lpr-backorder-allocator' ),
                                 wp_get_current_user()->display_name ?: 'User',
-                                wp_date( 'Y-m-d H:i' )
+                                wp_date( 'd-m-Y H:i' )
                         );
                         $po_id = wp_insert_post(
                                 array(
@@ -5764,11 +5867,11 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_Allocation_Overage_Checker' ) ) {
                                                 $a_time = isset( $a['allocated_at'] ) ? (string) $a['allocated_at'] : '';
                                                 $b_time = isset( $b['allocated_at'] ) ? (string) $b['allocated_at'] : '';
                                                 if ( $a_time !== $b_time ) {
-                                                        return strcmp( $b_time, $a_time );
+                                                        return lpr_allocator_compare_dates( $b_time, $a_time );
                                                 }
                                                 $a_eta = isset( $a['eta'] ) ? (string) $a['eta'] : '';
                                                 $b_eta = isset( $b['eta'] ) ? (string) $b['eta'] : '';
-                                                return strcmp( $b_eta, $a_eta );
+                                                return lpr_allocator_compare_dates( $b_eta, $a_eta );
                                         }
                                 );
 
@@ -5983,7 +6086,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Indexer' ) ) {
                                                 if ( '' === $eb ) {
                                                         return -1;
                                                 }
-                                                return strcmp( $ea, $eb );
+                                                return lpr_allocator_compare_dates( $ea, $eb );
                                         }
                                 );
 
@@ -6071,7 +6174,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Indexer' ) ) {
                                         if ( '' === $eb ) {
                                                 return -1;
                                         }
-                                        return strcmp( $ea, $eb );
+                                        return lpr_allocator_compare_dates( $ea, $eb );
                                 }
                         );
                         return $details;
@@ -6503,7 +6606,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Order_Indexer' ) ) {
                                                         'order_number'     => (string) $number,
                                                         'order_url'        => (string) $order_url,
                                                         'order_date_ts'    => $order_ts,
-                                                        'order_date'       => $order_date ? $order_date->date_i18n( 'Y-m-d' ) : '',
+                                                        'order_date'       => $order_date ? $order_date->date_i18n( 'd-m-Y' ) : '',
                                                         'status'           => (string) $status_h,
                                                         'customer'         => $customer,
                                                         'customer_email'   => (string) $order->get_billing_email(),
@@ -6728,7 +6831,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Backorder_Orders_Page' ) ) {
                                                 printf(
                                                         /* translators: %s: timestamp */
                                                         esc_html__( 'Last built: %s', 'lpr-backorder-allocator' ),
-                                                        $built_ts ? esc_html( wp_date( 'Y-m-d H:i:s', $built_ts ) ) : esc_html__( 'never', 'lpr-backorder-allocator' )
+                                                        $built_ts ? esc_html( wp_date( 'd-m-Y H:i:s', $built_ts ) ) : esc_html__( 'never', 'lpr-backorder-allocator' )
                                                 );
                                                 ?>
                                         </span>
@@ -7022,7 +7125,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Backordered_Products_Page' ) ) {
 							sprintf(
 								/* translators: %s: datetime */
 								__( 'Last built: %s', 'lpr-backorder-allocator' ),
-								$built_ts ? wp_date( 'Y-m-d H:i:s', $built_ts ) : __( 'never', 'lpr-backorder-allocator' )
+								$built_ts ? wp_date( 'd-m-Y H:i:s', $built_ts ) : __( 'never', 'lpr-backorder-allocator' )
 							)
 						);
 						?>
@@ -7034,8 +7137,8 @@ if ( ! class_exists( __NAMESPACE__ . '\Backordered_Products_Page' ) ) {
 					.lpr-backorders-table th, .lpr-backorders-table td { padding:8px; border-bottom:1px solid #e5e5e5; text-align:left; vertical-align:top; }
 					.lpr-backorders-table th.num, .lpr-backorders-table td.num { text-align:right; white-space:nowrap; }
 					.lpr-quick-form { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
-					.lpr-quick-form input[type="number"] { width:90px; }
-					.lpr-quick-form input[type="text"], .lpr-quick-form input[type="date"] { width:140px; }
+                                        .lpr-quick-form input[type="number"] { width:90px; }
+                                        .lpr-quick-form input[type="text"] { width:140px; }
 					.tablenav-pages { margin-top: 12px; }
 				</style>
 
@@ -7088,9 +7191,9 @@ if ( ! class_exists( __NAMESPACE__ . '\Backordered_Products_Page' ) ) {
 												<input type="text" name="supplier_name" />
 											</label>
 											<label>
-												<?php echo esc_html__( 'ETA (Y-m-d)', 'lpr-backorder-allocator' ); ?>
-												<input type="date" name="eta_ymd" />
-											</label>
+                                                                                                <?php echo esc_html__( 'ETA (d-m-Y)', 'lpr-backorder-allocator' ); ?>
+                                                                                                <input type="text" name="eta_ymd" placeholder="DD-MM-YYYY" pattern="\d{2}-\d{2}-\d{4}" />
+                                                                                        </label>
 											<button type="submit" class="button button-secondary"><?php echo esc_html__( 'Add to PO Draft', 'lpr-backorder-allocator' ); ?></button>
 										</form>
 									</td>
