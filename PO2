@@ -5429,6 +5429,10 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_Receive_Stock_UI' ) ) {
                         </style>
                         <script>
                         (function($){
+                                function escapeHtml(str){
+                                        return $('<div>').text(str || '').html();
+                                }
+
                                 function renderRows(lines){
                                         if(!lines || !lines.length){
                                                 return '<p><?php echo esc_js( __( 'No PO lines found.', 'lpr-backorder-allocator' ) ); ?></p>';
@@ -5465,7 +5469,14 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_Receive_Stock_UI' ) ) {
                                                         '<header><h3><?php echo esc_js( __( 'Receive stock', 'lpr-backorder-allocator' ) ); ?></h3><a href="#" class="lpr-po-receive-close">&times;</a></header>'+
                                                         '<div class="lpr-body">'+
                                                                 '<p class="lpr-status"></p>'+
-                                                                '<div class="lpr-entry-view">'+ bodyHtml +'</div>'+
+                                                                '<div class="lpr-entry-view">'+
+                                                                        '<div class="lpr-entry-rows">'+ bodyHtml +'</div>'+
+                                                                        '<div class="lpr-receive-note-block" style="margin-top:12px;">'+
+                                                                                '<label for="lpr-receive-note">'+<?php echo wp_json_encode( __( 'Receipt note (optional)', 'lpr-backorder-allocator' ) ); ?>+'</label>'+
+                                                                                '<textarea id="lpr-receive-note" class="widefat lpr-receive-note" rows="2" placeholder="'+<?php echo wp_json_encode( __( 'Add a note for this receipt (optional)', 'lpr-backorder-allocator' ) ); ?>+'"></textarea>'+
+                                                                                '<p class="description" style="margin-top:4px;">'+<?php echo wp_json_encode( __( 'Saved to the receipt log.', 'lpr-backorder-allocator' ) ); ?>+'</p>'+
+                                                                        '</div>'+
+                                                                '</div>'+
                                                                 '<div class="lpr-preview-view" style="display:none;"></div>'+
                                                         '</div>'+
                                                         '<div class="lpr-actions">'+
@@ -5484,8 +5495,8 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_Receive_Stock_UI' ) ) {
                                         return $.post(ajaxurl, {action:'lpr_po_receive_lines', po_id: poId, nonce: nonce});
                                 }
 
-                                function applyReceive(poId, nonce, payload){
-                                        return $.post(ajaxurl, {action:'lpr_po_receive_apply', po_id: poId, nonce: nonce, lines: payload});
+                                function applyReceive(poId, nonce, payload, note){
+                                        return $.post(ajaxurl, {action:'lpr_po_receive_apply', po_id: poId, nonce: nonce, lines: payload, note: note});
                                 }
 
                                 function showPreview($modal, rows){
@@ -5509,6 +5520,11 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_Receive_Stock_UI' ) ) {
                                         });
 
                                         html += '</tbody></table>';
+                                        var note = $.trim($modal.find('.lpr-receive-note').val() || '');
+                                        $modal.data('receiptNote', note);
+                                        if(note){
+                                                html += '<p><strong><?php echo esc_js( __( 'Note', 'lpr-backorder-allocator' ) ); ?>:</strong> '+escapeHtml(note)+'</p>';
+                                        }
                                         $modal.data('previewRows', rows);
                                         $modal.find('.lpr-preview-view').html(html).show();
                                         $modal.find('.lpr-entry-view').hide();
@@ -5605,6 +5621,7 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_Receive_Stock_UI' ) ) {
                                         e.preventDefault();
                                         var $modal = $(this).closest('.lpr-po-receive-modal');
                                         var rows = $modal.data('previewRows') || [];
+                                        var note = $modal.data('receiptNote') || '';
                                         if(!rows.length){
                                                 $modal.find('.lpr-status').text('<?php echo esc_js( __( 'No quantities to apply.', 'lpr-backorder-allocator' ) ); ?>');
                                                 return;
@@ -5616,10 +5633,12 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_Receive_Stock_UI' ) ) {
                                         var nonce = $modal.data('nonce');
 
                                         $modal.find('button').prop('disabled', true);
-                                        applyReceive(poId, nonce, payload).done(function(resp){
+                                        applyReceive(poId, nonce, payload, note).done(function(resp){
                                                 if(resp && resp.success && resp.data && resp.data.lines){
                                                         var newTable = renderRows(resp.data.lines);
-                                                        $modal.find('.lpr-entry-view').html(newTable);
+                                                        $modal.find('.lpr-entry-rows').html(newTable);
+                                                        $modal.find('.lpr-receive-note').val('');
+                                                        $modal.removeData('receiptNote');
                                                         showEntry($modal);
                                                         $modal.find('.lpr-status').text(resp.data.message || '<?php echo esc_js( __( 'Received quantities updated.', 'lpr-backorder-allocator' ) ); ?>');
                                                 }else{
@@ -5628,7 +5647,7 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_Receive_Stock_UI' ) ) {
                                                                 msg += ' ' + resp.data.details.join(' ');
                                                         }
                                                         if(resp && resp.data && resp.data.lines){
-                                                                $modal.find('.lpr-entry-view').html(renderRows(resp.data.lines));
+                                                                $modal.find('.lpr-entry-rows').html(renderRows(resp.data.lines));
                                                                 showEntry($modal);
                                                         }
                                                         $modal.find('.lpr-status').text(msg);
@@ -5969,7 +5988,7 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_Receive_Stock_UI' ) ) {
                         $receipts[ $receipt_index ]['status']       = 'completed';
                         $receipts[ $receipt_index ]['logs']         = $line_logs;
                         $receipts[ $receipt_index ]['completed_at'] = current_time( 'mysql' );
-                        $receipts[ $receipt_index ]['message']      = '';
+                        $receipts[ $receipt_index ]['message']      = (string) ( $receipts[ $receipt_index ]['message'] ?? '' );
                         self::save_receipts( $po_id, $receipts );
 
                         if ( class_exists( __NAMESPACE__ . '\Incoming_Stock_Indexer' ) ) {
@@ -6004,8 +6023,11 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_Receive_Stock_UI' ) ) {
                                 }
                         }
 
+                        $current_message = isset( $receipts[ $receipt_index ]['message'] ) ? (string) $receipts[ $receipt_index ]['message'] : '';
+                        $error_message   = implode( ' ', array_unique( array_map( 'wp_strip_all_tags', $errors ) ) );
+
                         $receipts[ $receipt_index ]['status']  = 'failed';
-                        $receipts[ $receipt_index ]['message'] = implode( ' ', array_unique( array_map( 'wp_strip_all_tags', $errors ) ) );
+                        $receipts[ $receipt_index ]['message'] = trim( $current_message . ' ' . $error_message );
                         self::save_receipts( $po_id, $receipts );
                 }
 
@@ -6096,6 +6118,8 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_Receive_Stock_UI' ) ) {
                         }
 
                         $submitted = isset( $_POST['lines'] ) ? (array) $_POST['lines'] : array();
+                        $note_raw  = isset( $_POST['note'] ) ? (string) wp_unslash( $_POST['note'] ) : '';
+                        $note      = sanitize_textarea_field( $note_raw );
                         $lines     = get_post_meta( $po_id, defined( __NAMESPACE__ . '\PO_META_LINES' ) ? PO_META_LINES : '_lpr_po_lines', true );
                         if ( ! is_array( $lines ) ) {
                                 $lines = array();
@@ -6176,7 +6200,7 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_Receive_Stock_UI' ) ) {
                                 'action_id'   => null,
                                 'lines'       => $receipt_lines,
                                 'logs'        => array(),
-                                'message'     => '',
+                                'message'     => $note,
                         );
 
                         $action_id = self::enqueue_action( $po_id, $receipt_id );
