@@ -5838,26 +5838,32 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_Receive_Stock_UI' ) ) {
 
                                         $modal.find('button').prop('disabled', true);
                                         applyReceive(poId, nonce, payload, note).done(function(resp){
-                                                if(resp && resp.success && resp.data && resp.data.lines){
-                                                        var newTable = renderRows(resp.data.lines);
-                                                        $modal.find('.lpr-entry-rows').html(newTable);
-                                                        $modal.find('.lpr-receive-note').val('');
-                                                        $modal.removeData('receiptNote');
-                                                        showEntry($modal);
-                                                        $modal.find('.lpr-status').text(resp.data.message || '<?php echo esc_js( __( 'Received quantities updated.', 'lpr-backorder-allocator' ) ); ?>');
-                                                }else{
-                                                        var msg = (resp && resp.data && resp.data.message) ? resp.data.message : '<?php echo esc_js( __( 'Unable to apply received quantities.', 'lpr-backorder-allocator' ) ); ?>';
-                                                        if(resp && resp.data && resp.data.details && resp.data.details.length){
-                                                                msg += ' ' + resp.data.details.join(' ');
-                                                        }
-                                                        if(resp && resp.data && resp.data.lines){
-                                                                $modal.find('.lpr-entry-rows').html(renderRows(resp.data.lines));
+                                                var data = (resp && resp.data) ? resp.data : {};
+                                                var successMsg = data.message || '<?php echo esc_js( __( 'Job scheduled. Stock will update asynchronously.', 'lpr-backorder-allocator' ) ); ?>';
+
+                                                if(resp && resp.success){
+                                                        if(data.lines){
+                                                                var newTable = renderRows(data.lines);
+                                                                $modal.find('.lpr-entry-rows').html(newTable);
+                                                                $modal.find('.lpr-receive-note').val('');
+                                                                $modal.removeData('receiptNote');
                                                                 showEntry($modal);
                                                         }
-                                                        $modal.find('.lpr-status').text(msg);
+                                                        $modal.find('.lpr-status').text(successMsg);
+                                                        return;
                                                 }
+
+                                                var msg = data.message || '<?php echo esc_js( __( 'Job not scheduled. Unable to apply received quantities.', 'lpr-backorder-allocator' ) ); ?>';
+                                                if(data.details && data.details.length){
+                                                        msg += ' ' + data.details.join(' ');
+                                                }
+                                                if(data.lines){
+                                                        $modal.find('.lpr-entry-rows').html(renderRows(data.lines));
+                                                        showEntry($modal);
+                                                }
+                                                $modal.find('.lpr-status').text(msg);
                                         }).fail(function(){
-                                                $modal.find('.lpr-status').text('<?php echo esc_js( __( 'Unable to apply received quantities.', 'lpr-backorder-allocator' ) ); ?>');
+                                                $modal.find('.lpr-status').text('<?php echo esc_js( __( 'Job not scheduled. Unable to apply received quantities.', 'lpr-backorder-allocator' ) ); ?>');
                                         }).always(function(){
                                                 $modal.find('button').prop('disabled', false);
                                         });
@@ -6492,7 +6498,7 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_Receive_Stock_UI' ) ) {
                                 }
                         }
 
-                        $message = __( 'Receipt queued. Stock will update asynchronously.', 'lpr-backorder-allocator' );
+                        $message = __( 'Job scheduled. Stock will update asynchronously.', 'lpr-backorder-allocator' );
                         wp_send_json_success(
                                 array(
                                         'message' => $message,
@@ -8645,19 +8651,24 @@ if ( ! class_exists( __NAMESPACE__ . '\Incoming_Purchase_Orders_Page' ) ) {
                                 <?php else : ?>
                                         <style>
                                                 .lpr-incoming-list { display:flex; flex-direction:column; gap:16px; }
-                                                .lpr-incoming-card { background:#fff; border:1px solid #dcdcde; box-shadow:0 1px 1px rgba(0,0,0,0.04); border-radius:4px; overflow:hidden; width:100%; }
-                                                .lpr-incoming-card__header { display:flex; justify-content:space-between; align-items:flex-start; padding:12px 16px; background:#f6f7f7; border-bottom:1px solid #dcdcde; gap:12px; }
+                                                .lpr-incoming-card { background:#fff; border:1px solid #e0e4e7; box-shadow:0 4px 14px rgba(0,0,0,0.03); border-radius:8px; overflow:hidden; width:100%; }
+                                                .lpr-incoming-card__header { display:flex; justify-content:space-between; align-items:flex-start; padding:14px 18px; background:linear-gradient(180deg, #f8fafc 0%, #f4f6f8 100%); border-bottom:1px solid #e6eaee; gap:12px; }
                                                 .lpr-incoming-card__title { font-size:15px; font-weight:600; margin:0 0 4px; }
-                                                .lpr-incoming-card__meta { color:#50575e; font-size:12px; margin:0; display:flex; flex-wrap:wrap; gap:8px; }
-                                                .lpr-incoming-card__eta { display:flex; flex-direction:column; align-items:flex-end; gap:6px; text-align:right; }
-                                                .lpr-incoming-card__eta-days { color:#50575e; font-size:12px; display:block; }
-                                                .lpr-incoming-card__stats { display:flex; flex-wrap:wrap; gap:12px; padding:10px 16px; border-bottom:1px solid #dcdcde; background:#fff; }
-                                                .lpr-incoming-card__stats span { display:inline-flex; align-items:center; gap:4px; font-size:12px; }
-                                                .lpr-incoming-card table { width:100%; border-collapse:collapse; }
-                                                .lpr-incoming-card th, .lpr-incoming-card td { padding:8px 10px; border-bottom:1px solid #f0f0f1; text-align:left; }
+                                                .lpr-incoming-card__meta { color:#4c5561; font-size:12px; margin:0; display:flex; flex-wrap:wrap; gap:10px; }
+                                                .lpr-incoming-card__eta { display:flex; flex-direction:column; align-items:flex-end; gap:4px; text-align:right; }
+                                                .lpr-incoming-card__eta-days { color:#1d2327; font-size:12px; display:inline-flex; align-items:center; gap:6px; padding:4px 8px; border-radius:999px; background:#eef2f7; }
+                                                .lpr-incoming-card__stats { display:flex; flex-wrap:wrap; gap:12px; padding:12px 16px; border-bottom:1px solid #edf0f3; background:#fff; }
+                                                .lpr-incoming-card__stats span { display:inline-flex; align-items:center; gap:6px; font-size:12px; color:#1d2327; }
+                                                .lpr-incoming-card table { width:100%; border-collapse:separate; border-spacing:0; }
+                                                .lpr-incoming-card th { padding:10px 12px; text-align:left; font-size:12px; text-transform:uppercase; letter-spacing:.02em; color:#4c5561; background:#f7f9fb; border-bottom:1px solid #e8edf2; }
+                                                .lpr-incoming-card td { padding:10px 12px; text-align:left; font-size:13px; border:0; }
+                                                .lpr-incoming-card tbody tr:nth-child(odd) td { background:#fbfcff; }
+                                                .lpr-incoming-card tbody tr:nth-child(even) td { background:#ffffff; }
+                                                .lpr-incoming-card tbody tr:hover td { background:#eef3ff; }
+                                                .lpr-incoming-card tbody tr td { border-top:1px solid #eef0f3; }
                                                 .lpr-incoming-card th.num, .lpr-incoming-card td.num { text-align:right; white-space:nowrap; }
-                                                .lpr-badge { display:inline-block; padding:3px 8px; border-radius:12px; font-size:11px; font-weight:600; border:1px solid #2271b1; color:#2271b1; background:#e8f4fb; }
-                                                .lpr-incoming-card__actions { margin-top:8px; display:flex; justify-content:flex-start; gap:8px; }
+                                                .lpr-badge { display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px; font-size:11px; font-weight:600; border:1px solid #1e73be; color:#1e73be; background:#ecf5ff; }
+                                                .lpr-incoming-card__actions { margin-top:10px; display:flex; justify-content:flex-start; gap:8px; }
                                         </style>
 
                                         <div class="lpr-incoming-list">
