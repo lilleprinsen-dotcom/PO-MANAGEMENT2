@@ -5827,7 +5827,8 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_Receive_Stock_UI' ) ) {
                                 if ( isset( $receipt['id'] ) && $receipt_id === (string) $receipt['id'] ) {
                                         $receipt_index = $i;
                                         $receipt_lines = isset( $receipt['lines'] ) && is_array( $receipt['lines'] ) ? $receipt['lines'] : array();
-                                        if ( 'completed' === (string) ( $receipt['status'] ?? '' ) ) {
+                                        $status        = (string) ( $receipt['status'] ?? '' );
+                                        if ( in_array( $status, array( 'completed', 'failed' ), true ) ) {
                                                 return;
                                         }
                                         break;
