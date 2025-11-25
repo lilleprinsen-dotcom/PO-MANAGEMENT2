@@ -6211,7 +6211,14 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_Receive_Stock_UI' ) ) {
                         }
 
                         // Run the receipt immediately to ensure inventory is updated even before the async worker runs.
-                        self::process_receipt( $po_id, $receipt_id );
+                        try {
+                                self::process_receipt( $po_id, $receipt_id );
+                        } catch ( \Throwable $e ) {
+                                // Avoid surfacing fatal errors to the AJAX caller; the queued action will still run.
+                                if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+                                        error_log( sprintf( 'LPR allocator receipt sync failure: %s', $e->getMessage() ) );
+                                }
+                        }
 
                         $message = __( 'Receipt queued. Stock will update asynchronously.', 'lpr-backorder-allocator' );
                         wp_send_json_success(
