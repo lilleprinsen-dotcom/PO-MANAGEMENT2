@@ -6164,6 +6164,10 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_Receive_Stock_UI' ) ) {
                         if ( class_exists( __NAMESPACE__ . '\Incoming_Stock_Indexer' ) ) {
                                 Incoming_Stock_Indexer::refresh_all();
                         }
+
+                        if ( function_exists( __NAMESPACE__ . '\lpr_allocator_maybe_close_po' ) ) {
+                                lpr_allocator_maybe_close_po( $po_id );
+                        }
                 }
 
                 /**
@@ -6410,6 +6414,10 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_Receive_Stock_UI' ) ) {
 
                         if ( class_exists( __NAMESPACE__ . '\Incoming_Stock_Indexer' ) ) {
                                 Incoming_Stock_Indexer::refresh_all();
+                        }
+
+                        if ( function_exists( __NAMESPACE__ . '\lpr_allocator_maybe_close_po' ) ) {
+                                lpr_allocator_maybe_close_po( $po_id );
                         }
 
                         // Run the receipt immediately to ensure inventory is updated even before the async worker runs.
@@ -6809,6 +6817,34 @@ if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_po_is_fully_received' ) 
                 }
 
                 return $has_ordered_lines;
+        }
+}
+
+if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_maybe_close_po' ) ) {
+        /**
+         * Close a PO when all ordered lines are fully received.
+         */
+        function lpr_allocator_maybe_close_po( int $po_id ): void {
+                if ( $po_id <= 0 ) {
+                        return;
+                }
+
+                $post = get_post( $po_id );
+                if ( ! ( $post instanceof \WP_Post ) ) {
+                        return;
+                }
+
+                $status_closed = defined( __NAMESPACE__ . '\PO_STATUS_CLOSED' ) ? PO_STATUS_CLOSED : 'closed';
+                $live_statuses = lpr_allocator_live_po_statuses();
+
+                if ( in_array( $post->post_status, $live_statuses, true ) && lpr_allocator_po_is_fully_received( $po_id ) ) {
+                        wp_update_post(
+                                array(
+                                        'ID'          => $po_id,
+                                        'post_status' => $status_closed,
+                                )
+                        );
+                }
         }
 }
 
@@ -7232,7 +7268,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Indexer' ) ) {
                                         $qty_received  = isset( $line['qty_received'] ) ? max( 0, (int) $line['qty_received'] ) : 0;
                                         $free          = max( 0, $qty_ordered - $qty_allocated - $qty_received );
 
-                                        if ( $qty_ordered <= 0 ) {
+                                        if ( $qty_ordered <= 0 || $qty_received >= $qty_ordered ) {
                                                 continue;
                                         }
 
@@ -7319,8 +7355,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Indexer' ) ) {
                                 return;
                         }
 
-                        $statuses      = lpr_allocator_live_po_statuses();
-                        $status_closed = defined( __NAMESPACE__ . '\PO_STATUS_CLOSED' ) ? PO_STATUS_CLOSED : 'closed';
+                        $statuses = lpr_allocator_live_po_statuses();
 
                         $query = new \WP_Query(
                                 array(
@@ -7333,15 +7368,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Incoming_Stock_Indexer' ) ) {
                         );
 
                         foreach ( $query->posts as $po_id ) {
-                                $po_id = (int) $po_id;
-                                if ( $po_id > 0 && lpr_allocator_po_is_fully_received( $po_id ) ) {
-                                        wp_update_post(
-                                                array(
-                                                        'ID'          => $po_id,
-                                                        'post_status' => $status_closed,
-                                                )
-                                        );
-                                }
+                                lpr_allocator_maybe_close_po( (int) $po_id );
                         }
                 }
 
@@ -8458,7 +8485,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Incoming_Purchase_Orders_Page' ) ) {
                                         $qty_allocated = isset( $line['qty_allocated'] ) ? max( 0, (int) $line['qty_allocated'] ) : 0;
                                         $qty_received  = isset( $line['qty_received'] ) ? max( 0, (int) $line['qty_received'] ) : 0;
 
-                                        if ( $qty_ordered <= 0 ) {
+                                        if ( $qty_ordered <= 0 || $qty_received >= $qty_ordered ) {
                                                 continue;
                                         }
 
@@ -8511,7 +8538,14 @@ if ( ! class_exists( __NAMESPACE__ . '\Incoming_Purchase_Orders_Page' ) ) {
                         }
 
                         // Normalize into a list and sort by ETA earliest -> latest, then PO ID.
-                        $rows = array_values( $entries );
+                        $rows = array_values(
+                                array_filter(
+                                        $entries,
+                                        static function ( $row ) {
+                                                return ! empty( $row['lines'] );
+                                        }
+                                )
+                        );
                         usort(
                                 $rows,
                                 static function ( $a, $b ) {
@@ -8548,12 +8582,13 @@ if ( ! class_exists( __NAMESPACE__ . '\Incoming_Purchase_Orders_Page' ) ) {
                                         <div class="notice notice-info"><p><?php echo esc_html__( 'No incoming purchase orders in open or partial status.', 'lpr-backorder-allocator' ); ?></p></div>
                                 <?php else : ?>
                                         <style>
-                                                .lpr-incoming-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:16px; }
-                                                .lpr-incoming-card { background:#fff; border:1px solid #dcdcde; box-shadow:0 1px 1px rgba(0,0,0,0.04); border-radius:4px; overflow:hidden; }
-                                                .lpr-incoming-card__header { display:flex; justify-content:space-between; align-items:flex-start; padding:12px 16px; background:#f6f7f7; border-bottom:1px solid #dcdcde; }
+                                                .lpr-incoming-list { display:flex; flex-direction:column; gap:16px; }
+                                                .lpr-incoming-card { background:#fff; border:1px solid #dcdcde; box-shadow:0 1px 1px rgba(0,0,0,0.04); border-radius:4px; overflow:hidden; width:100%; }
+                                                .lpr-incoming-card__header { display:flex; justify-content:space-between; align-items:flex-start; padding:12px 16px; background:#f6f7f7; border-bottom:1px solid #dcdcde; gap:12px; }
                                                 .lpr-incoming-card__title { font-size:15px; font-weight:600; margin:0 0 4px; }
                                                 .lpr-incoming-card__meta { color:#50575e; font-size:12px; margin:0; display:flex; flex-wrap:wrap; gap:8px; }
-                                                .lpr-incoming-card__eta { font-weight:700; }
+                                                .lpr-incoming-card__eta { display:flex; flex-direction:column; align-items:flex-end; gap:6px; text-align:right; }
+                                                .lpr-incoming-card__eta-days { color:#50575e; font-size:12px; display:block; }
                                                 .lpr-incoming-card__stats { display:flex; flex-wrap:wrap; gap:12px; padding:10px 16px; border-bottom:1px solid #dcdcde; background:#fff; }
                                                 .lpr-incoming-card__stats span { display:inline-flex; align-items:center; gap:4px; font-size:12px; }
                                                 .lpr-incoming-card table { width:100%; border-collapse:collapse; }
@@ -8563,7 +8598,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Incoming_Purchase_Orders_Page' ) ) {
                                                 .lpr-incoming-card__actions { margin-top:8px; display:flex; justify-content:flex-start; gap:8px; }
                                         </style>
 
-                                        <div class="lpr-incoming-grid">
+                                        <div class="lpr-incoming-list">
                                                 <?php foreach ( $rows as $row ) :
                                                         $eta_label = $row['eta'] ? lpr_allocator_format_store_date( (string) $row['eta'] ) : __( 'No ETA set', 'lpr-backorder-allocator' );
                                                         $po_label  = ! empty( $row['po_number'] ) ? (string) $row['po_number'] : '#' . ( $row['po_id'] ?? '' );
@@ -8574,6 +8609,22 @@ if ( ! class_exists( __NAMESPACE__ . '\Incoming_Purchase_Orders_Page' ) ) {
                                                         $allocated = (int) ( $totals['allocated'] ?? 0 );
                                                         $received  = (int) ( $totals['received'] ?? 0 );
                                                         $free      = (int) ( $totals['free'] ?? max( 0, $ordered - $allocated - $received ) );
+                                                        $eta_days  = '';
+
+                                                        if ( $row['eta'] ) {
+                                                                $eta_date = lpr_allocator_parse_date( (string) $row['eta'] );
+                                                                if ( $eta_date ) {
+                                                                        $tz          = function_exists( 'wp_timezone' ) ? wp_timezone() : new \DateTimeZone( 'UTC' );
+                                                                        $today_start = new \DateTimeImmutable( 'today', $tz );
+                                                                        $diff_days   = (int) $today_start->diff( $eta_date )->format( '%r%a' );
+
+                                                                        if ( $diff_days >= 0 ) {
+                                                                                $eta_days = sprintf( _n( '%s day until ETA', '%s days until ETA', $diff_days, 'lpr-backorder-allocator' ), number_format_i18n( $diff_days ) );
+                                                                        } else {
+                                                                                $eta_days = sprintf( _n( '%s day past ETA', '%s days past ETA', abs( $diff_days ), 'lpr-backorder-allocator' ), number_format_i18n( abs( $diff_days ) ) );
+                                                                        }
+                                                                }
+                                                        }
                                                         ?>
                                                         <div class="lpr-incoming-card">
                                                                 <div class="lpr-incoming-card__header">
@@ -8604,6 +8655,9 @@ if ( ! class_exists( __NAMESPACE__ . '\Incoming_Purchase_Orders_Page' ) ) {
                                                                         </div>
                                                                         <div class="lpr-incoming-card__eta">
                                                                                 <span class="lpr-badge"><?php echo esc_html( sprintf( __( 'ETA %s', 'lpr-backorder-allocator' ), $eta_label ) ); ?></span>
+                                                                                <?php if ( '' !== $eta_days ) : ?>
+                                                                                        <span class="lpr-incoming-card__eta-days"><?php echo esc_html( $eta_days ); ?></span>
+                                                                                <?php endif; ?>
                                                                         </div>
                                                                 </div>
 
