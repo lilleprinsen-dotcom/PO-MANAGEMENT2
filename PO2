@@ -6431,7 +6431,6 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_Allocation_Overview' ) ) {
 - New helper function lpr_allocator_calc_backorder_need() (guarded) to compute remaining needed qty per item using Backordered meta or on_backorder fallback minus active allocations.
 - All declarations are new & guarded; used Woo CRUD only; respects admin/cron-only early return; frontend remains untouched.
 */
-/**
 namespace LPR\Allocator;
 
 if ( ! is_admin() && ! wp_doing_cron() ) {
