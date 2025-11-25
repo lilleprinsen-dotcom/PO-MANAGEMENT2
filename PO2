@@ -5827,8 +5827,7 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_Receive_Stock_UI' ) ) {
                                 if ( isset( $receipt['id'] ) && $receipt_id === (string) $receipt['id'] ) {
                                         $receipt_index = $i;
                                         $receipt_lines = isset( $receipt['lines'] ) && is_array( $receipt['lines'] ) ? $receipt['lines'] : array();
-                                        $status        = (string) ( $receipt['status'] ?? '' );
-                                        if ( in_array( $status, array( 'completed', 'failed' ), true ) ) {
+                                        if ( 'completed' === (string) ( $receipt['status'] ?? '' ) ) {
                                                 return;
                                         }
                                         break;
@@ -6214,30 +6213,10 @@ if ( ! class_exists( __NAMESPACE__ . '\PO_Receive_Stock_UI' ) ) {
                         // Run the receipt immediately to ensure inventory is updated even before the async worker runs.
                         self::process_receipt( $po_id, $receipt_id );
 
-                        $status_message = __( 'Receipt queued. Stock will update asynchronously.', 'lpr-backorder-allocator' );
-                        $receipts       = self::get_receipts( $po_id );
-                        foreach ( $receipts as $receipt ) {
-                                if ( isset( $receipt['id'] ) && $receipt_id === (string) $receipt['id'] ) {
-                                        $status = self::resolve_receipt_status( $receipt );
-                                        if ( 'failed' === $status ) {
-                                                $status_message = ! empty( $receipt['message'] ) ? (string) $receipt['message'] : __( 'Unable to apply received quantities.', 'lpr-backorder-allocator' );
-                                                wp_send_json_error(
-                                                        array(
-                                                                'message' => $status_message,
-                                                                'lines'   => self::collect_lines( $po_id ),
-                                                        )
-                                                );
-                                        }
-                                        if ( 'completed' === $status ) {
-                                                $status_message = __( 'Received quantities applied.', 'lpr-backorder-allocator' );
-                                        }
-                                        break;
-                                }
-                        }
-
+                        $message = __( 'Receipt queued. Stock will update asynchronously.', 'lpr-backorder-allocator' );
                         wp_send_json_success(
                                 array(
-                                        'message' => $status_message,
+                                        'message' => $message,
                                         'lines'   => self::collect_lines( $po_id ),
                                 )
                         );
