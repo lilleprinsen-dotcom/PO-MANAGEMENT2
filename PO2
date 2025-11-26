@@ -1006,13 +1006,47 @@ function lpr_allocator_enqueue_datepicker_assets(): void {
         wp_add_inline_style(
                 'woocommerce_admin_styles',
                 '#ui-datepicker-div, .ui-datepicker { background: #fff; }\n'
-                . '#ui-datepicker-div .ui-datepicker-header, .ui-datepicker .ui-datepicker-header { background: #fff; }'
+                . '#ui-datepicker-div .ui-datepicker-header, .ui-datepicker .ui-datepicker-header { background: #fff; }\n'
+                . '#ui-datepicker-div, #ui-datepicker-div .ui-datepicker-calendar, .ui-datepicker.ui-widget-content {\n'
+                . '  background-color: #fff;\n'
+                . '  border: 1px solid #c3c4c7;\n'
+                . '  box-shadow: 0 4px 12px rgba(0,0,0,0.12);\n'
+                . '  color: #1d2327;\n'
+                . '}'
         );
         wp_enqueue_script( 'wc-admin-meta-boxes' );
         wp_enqueue_script( 'jquery-ui-datepicker' );
 
+        $datepicker_js = "jQuery(function($){\n"
+                . "\tvar allocatorDateFormat = 'dd-mm-yy';\n"
+                . "\tfunction normalizeAllocatorDate($input){\n"
+                . "\t\tvar val = ($input.val() || '').trim();\n"
+                . "\t\tvar isoMatch = val.match(/^(\\d{4})-(\\d{2})-(\\d{2})$/);\n"
+                . "\t\tif(isoMatch){\n"
+                . "\t\t\t$input.val(isoMatch[3] + '-' + isoMatch[2] + '-' + isoMatch[1]);\n"
+                . "\t\t}\n"
+                . "\t}\n"
+                . "\tfunction initAllocatorDatepickers(context){\n"
+                . "\t\tvar $ctx = context ? $(context) : $(document.body);\n"
+                . "\t\t$ctx.find('.wc_input_date, .date-picker').each(function(){\n"
+                . "\t\t\tvar $input = $(this);\n"
+                . "\t\t\tnormalizeAllocatorDate($input);\n"
+                . "\t\t\tif($input.hasClass('hasDatepicker')){\n"
+                . "\t\t\t\t$input.datepicker('destroy');\n"
+                . "\t\t\t}\n"
+                . "\t\t\t$input.datepicker({ dateFormat: allocatorDateFormat });\n"
+                . "\t\t});\n"
+                . "\t}\n"
+                . "\tinitAllocatorDatepickers();\n"
+                . "\t$(document.body).on('wc-init-datepickers', function(event, context){\n"
+                . "\t\tinitAllocatorDatepickers(context);\n"
+                . "\t});\n"
+                . "});";
+
         if ( function_exists( 'wc_enqueue_js' ) ) {
-                wc_enqueue_js( "jQuery(function($){\n\tfunction initAllocatorDatepickers(context){\n\t\tvar $ctx = context ? $(context) : $(document.body);\n\t\t$ctx.find('.wc_input_date, .date-picker').datepicker({\n\t\t\tdateFormat: 'dd-mm-yy'\n\t\t});\n\t}\n\tinitAllocatorDatepickers();\n\t$(document.body).on('wc-init-datepickers', function(event, context){\n\t\tinitAllocatorDatepickers(context);\n\t});\n});" );
+                wc_enqueue_js( $datepicker_js );
+        } elseif ( function_exists( 'wp_add_inline_script' ) ) {
+                wp_add_inline_script( 'jquery-ui-datepicker', $datepicker_js );
         }
 
 	$enqueued = true;
@@ -1728,7 +1762,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_CPT' ) ) {
                                                         'id'                => 'lpr_eta_date',
                                                         'name'              => 'lpr_eta_date',
                                                         'type'              => 'text',
-                                                        'label'             => __( 'Default ETA (d-m-Y)', 'lpr-backorder-allocator' ),
+                                                        'label'             => __( 'Default ETA (dd-mm-yy)', 'lpr-backorder-allocator' ),
                                                         'class'             => 'short wc_input_date lpr-date-picker date-picker',
                                                         'data_type'         => 'date',
                                                         'value'             => $eta,
@@ -1789,7 +1823,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_CPT' ) ) {
 						<th><?php echo esc_html__( 'Variation ID', 'lpr-backorder-allocator' ); ?></th>
 						<th><?php echo esc_html__( 'Qty Ordered', 'lpr-backorder-allocator' ); ?></th>
 						<th><?php echo esc_html__( 'Qty Allocated', 'lpr-backorder-allocator' ); ?></th>
-						<th><?php echo esc_html__( 'ETA Override (d-m-Y)', 'lpr-backorder-allocator' ); ?></th>
+                                                <th><?php echo esc_html__( 'ETA Override (dd-mm-yy)', 'lpr-backorder-allocator' ); ?></th>
 						<th><?php echo esc_html__( 'Qty Received', 'lpr-backorder-allocator' ); ?></th>
 						<th><?php echo esc_html__( 'Remove', 'lpr-backorder-allocator' ); ?></th>
 					</tr>
