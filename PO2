@@ -986,7 +986,7 @@ add_action( 'admin_enqueue_scripts', __NAMESPACE__ . '\lpr_allocator_enqueue_dat
  * Enqueue a WooCommerce-style datepicker for ETA/admin date fields.
  */
 function lpr_allocator_enqueue_datepicker_assets(): void {
-	static $enqueued = false;
+        static $enqueued = false;
 
 	if ( $enqueued ) {
 		return;
@@ -998,17 +998,22 @@ function lpr_allocator_enqueue_datepicker_assets(): void {
 	$page     = isset( $_GET['page'] ) ? sanitize_key( wp_unslash( $_GET['page'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 
 	$targets = array( $po_cpt, 'shop_order', 'woocommerce_page_wc-orders' );
-	if ( $screen && ! in_array( $screen_id, $targets, true ) && 'lpr-backordered-products' !== $page ) {
-		return;
-	}
+        if ( $screen && ! in_array( $screen_id, $targets, true ) && 'lpr-backordered-products' !== $page ) {
+                return;
+        }
 
-	wp_enqueue_style( 'woocommerce_admin_styles' );
-	wp_enqueue_script( 'wc-admin-meta-boxes' );
-	wp_enqueue_script( 'jquery-ui-datepicker' );
+        wp_enqueue_style( 'woocommerce_admin_styles' );
+        wp_add_inline_style(
+                'woocommerce_admin_styles',
+                '#ui-datepicker-div, .ui-datepicker { background: #fff; }\n'
+                . '#ui-datepicker-div .ui-datepicker-header, .ui-datepicker .ui-datepicker-header { background: #fff; }'
+        );
+        wp_enqueue_script( 'wc-admin-meta-boxes' );
+        wp_enqueue_script( 'jquery-ui-datepicker' );
 
 	if ( function_exists( 'wc_enqueue_js' ) ) {
-		wc_enqueue_js( "jQuery(function($){\n\tvar selector = 'input.lpr-date-picker';\n\tfunction syncAllocatorDatepickers(context){\n\t\tvar $ctx = context ? $(context) : $(document.body);\n\t\t$ctx.find(selector).each(function(){\n\t\t\tvar $input = $(this);\n\t\t\tvar format = $input.data('date-format');\n\t\t\tif ( format && $input.hasClass('hasDatepicker') ) {\n\t\t\t\t$input.datepicker('option', 'dateFormat', format);\n\t\t\t}\n\t\t});\n\t}\n\t$(selector).addClass('date-picker');\n\t$(document.body).on('wc-init-datepickers', function(event, context){\n\t\tsyncAllocatorDatepickers(context);\n\t});\n\t$( document.body ).trigger( 'wc-init-datepickers' );\n\tsyncAllocatorDatepickers(document);\n});" );
-	}
+                wc_enqueue_js( "jQuery(function($){\n\tvar selector = 'input.lpr-date-picker';\n\tfunction ensureAllocatorDateFormat($input){\n\t\tvar format = $input.data('date-format') || 'dd-mm-yy';\n\t\t$input.data('date-format', format);\n\t\tif ( $input.hasClass('hasDatepicker') ) {\n\t\t\t$input.datepicker('option', 'dateFormat', format);\n\t\t}\n\t}\n\tfunction syncAllocatorDatepickers(context){\n\t\tvar $ctx = context ? $(context) : $(document.body);\n\t\t$ctx.find(selector).each(function(){\n\t\t\tensureAllocatorDateFormat($(this));\n\t\t});\n\t}\n\t$(selector).addClass('date-picker');\n\t$(document.body).on('wc-init-datepickers', function(event, context){\n\t\tsyncAllocatorDatepickers(context);\n\t});\n\t$( document.body ).trigger( 'wc-init-datepickers' );\n\tsyncAllocatorDatepickers(document);\n});" );
+        }
 
 	$enqueued = true;
 }
@@ -1694,9 +1699,9 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_CPT' ) ) {
 			}
 			wp_nonce_field( 'lpr_po_header_action', 'lpr_po_header_nonce' );
 
-			$supplier  = get_post_meta( $post->ID, PO_META_SUPPLIER_NAME, true );
-			$po_number = get_post_meta( $post->ID, PO_META_PO_NUMBER, true );
-			$eta       = get_post_meta( $post->ID, PO_META_ETA_DATE, true );
+                        $supplier  = get_post_meta( $post->ID, PO_META_SUPPLIER_NAME, true );
+                        $po_number = get_post_meta( $post->ID, PO_META_PO_NUMBER, true );
+                        $eta       = lpr_allocator_sanitize_ymd( (string) get_post_meta( $post->ID, PO_META_ETA_DATE, true ) );
 			$status    = in_array( $post->post_status, array( PO_STATUS_OPEN, PO_STATUS_PARTIAL, PO_STATUS_CLOSED ), true ) ? $post->post_status : PO_STATUS_OPEN;
 
 			?>
@@ -1779,7 +1784,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_CPT' ) ) {
 						$variation_id = isset( $line['variation_id'] ) ? absint( $line['variation_id'] ) : 0;
 						$qty_ordered  = isset( $line['qty_ordered'] ) ? max( 0, (int) $line['qty_ordered'] ) : 0;
 						$qty_alloc    = isset( $line['qty_allocated'] ) ? max( 0, (int) $line['qty_allocated'] ) : 0;
-						$eta_override = isset( $line['eta_override'] ) ? (string) $line['eta_override'] : '';
+                                                $eta_override = isset( $line['eta_override'] ) ? lpr_allocator_sanitize_ymd( (string) $line['eta_override'] ) : '';
 						$qty_recv     = isset( $line['qty_received'] ) ? max( 0, (int) $line['qty_received'] ) : 0;
 						?>
 						<tr>
@@ -4040,7 +4045,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_Live_Product_UI' ) ) {
 						$chosen_id    = $variation_id > 0 ? $variation_id : $product_id;
 						$qty_ordered  = isset( $line['qty_ordered'] ) ? max( 0, (int) $line['qty_ordered'] ) : 0;
 						$qty_alloc    = isset( $line['qty_allocated'] ) ? max( 0, (int) $line['qty_allocated'] ) : 0;
-						$eta_override = isset( $line['eta_override'] ) ? (string) $line['eta_override'] : '';
+                                                $eta_override = isset( $line['eta_override'] ) ? lpr_allocator_sanitize_ymd( (string) $line['eta_override'] ) : '';
 						$qty_recv     = isset( $line['qty_received'] ) ? max( 0, (int) $line['qty_received'] ) : 0;
 
 						$label = $chosen_id ? lpr_allocator_product_option_label( $chosen_id ) : '';
