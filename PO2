@@ -899,7 +899,7 @@ if ( ! defined( __NAMESPACE__ . '\PO_META_PO_NUMBER' ) ) {
 	define( __NAMESPACE__ . '\PO_META_PO_NUMBER', '_lpr_po_number' );
 }
 if ( ! defined( __NAMESPACE__ . '\PO_META_ETA_DATE' ) ) {
-        define( __NAMESPACE__ . '\PO_META_ETA_DATE', '_lpr_eta_date' ); // d-m-Y
+        define( __NAMESPACE__ . '\PO_META_ETA_DATE', '_lpr_eta_date' ); // d-m-y
 }
 if ( ! defined( __NAMESPACE__ . '\PO_META_LINES' ) ) {
         define( __NAMESPACE__ . '\PO_META_LINES', '_lpr_po_lines' );
@@ -923,7 +923,7 @@ if ( ! defined( __NAMESPACE__ . '\PO_STATUS_CLOSED' ) ) {
 
 if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_sanitize_ymd' ) ) {
         /**
-         * Sanitize a date string to d-m-Y or empty.
+         * Sanitize a date string to d-m-y or empty.
          *
          * @param string $val
          * @return string
@@ -936,15 +936,20 @@ if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_sanitize_ymd' ) ) {
 
                 $tz = function_exists( 'wp_timezone' ) ? wp_timezone() : new \DateTimeZone( 'UTC' );
 
-                $d = \DateTimeImmutable::createFromFormat( '!d-m-Y', $val, $tz );
-                if ( $d && $d->format( 'd-m-Y' ) === $val ) {
+                $d_two_digit = \DateTimeImmutable::createFromFormat( '!d-m-y', $val, $tz );
+                if ( $d_two_digit && $d_two_digit->format( 'd-m-y' ) === $val ) {
                         return $val;
                 }
 
-                // Accept legacy Y-m-d values and normalize to d-m-Y.
+                $d_four_digit = \DateTimeImmutable::createFromFormat( '!d-m-Y', $val, $tz );
+                if ( $d_four_digit && $d_four_digit->format( 'd-m-Y' ) === $val ) {
+                        return $d_four_digit->format( 'd-m-y' );
+                }
+
+                // Accept legacy Y-m-d values and normalize to d-m-y.
                 $legacy = \DateTimeImmutable::createFromFormat( '!Y-m-d', $val, $tz );
                 if ( $legacy && $legacy->format( 'Y-m-d' ) === $val ) {
-                        return $legacy->format( 'd-m-Y' );
+                        return $legacy->format( 'd-m-y' );
                 }
 
                 return '';
@@ -966,7 +971,7 @@ if ( ! function_exists( __NAMESPACE__ . '\lpr_allocator_parse_date' ) ) {
                 }
 
                 $tz      = function_exists( 'wp_timezone' ) ? wp_timezone() : new \DateTimeZone( 'UTC' );
-                $formats = array( '!d-m-Y H:i:s', '!d-m-Y H:i', '!d-m-Y', '!Y-m-d H:i:s', '!Y-m-d H:i', '!Y-m-d' );
+                $formats = array( '!d-m-y H:i:s', '!d-m-y H:i', '!d-m-y', '!d-m-Y H:i:s', '!d-m-Y H:i', '!d-m-Y', '!Y-m-d H:i:s', '!Y-m-d H:i', '!Y-m-d' );
 
                 foreach ( $formats as $format ) {
                         $display  = ltrim( $format, '!' );
@@ -1007,6 +1012,7 @@ function lpr_allocator_enqueue_datepicker_assets(): void {
                 'woocommerce_admin_styles',
                 '#ui-datepicker-div, .ui-datepicker { background: #fff; }\n'
                 . '#ui-datepicker-div .ui-datepicker-header, .ui-datepicker .ui-datepicker-header { background: #fff; }\n'
+                . '.ui-datepicker .ui-state-default { background: #fff; }\n'
                 . '#ui-datepicker-div, #ui-datepicker-div .ui-datepicker-calendar, .ui-datepicker.ui-widget-content {\n'
                 . '  background-color: #fff;\n'
                 . '  border: 1px solid #c3c4c7;\n'
@@ -1018,12 +1024,18 @@ function lpr_allocator_enqueue_datepicker_assets(): void {
         wp_enqueue_script( 'jquery-ui-datepicker' );
 
         $datepicker_js = "jQuery(function($){\n"
-                . "\tvar allocatorDateFormat = 'dd-mm-yy';\n"
+                . "\tvar allocatorDateFormat = 'dd-mm-y';\n"
                 . "\tfunction normalizeAllocatorDate($input){\n"
                 . "\t\tvar val = ($input.val() || '').trim();\n"
                 . "\t\tvar isoMatch = val.match(/^(\\d{4})-(\\d{2})-(\\d{2})$/);\n"
                 . "\t\tif(isoMatch){\n"
-                . "\t\t\t$input.val(isoMatch[3] + '-' + isoMatch[2] + '-' + isoMatch[1]);\n"
+                . "\t\t\tvar yy = isoMatch[1].slice(-2);\n"
+                . "\t\t\t$input.val(isoMatch[3] + '-' + isoMatch[2] + '-' + yy);\n"
+                . "\t\t\treturn;\n"
+                . "\t\t}\n"
+                . "\t\tvar longMatch = val.match(/^(\\d{2})-(\\d{2})-(\\d{4})$/);\n"
+                . "\t\tif(longMatch){\n"
+                . "\t\t\t$input.val(longMatch[1] + '-' + longMatch[2] + '-' + longMatch[3].slice(-2));\n"
                 . "\t\t}\n"
                 . "\t}\n"
                 . "\tfunction initAllocatorDatepickers(context){\n"
@@ -1767,9 +1779,9 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_CPT' ) ) {
                                                         'data_type'         => 'date',
                                                         'value'             => $eta,
                                                         'custom_attributes' => array(
-                                                                'data-date-format' => 'dd-mm-yy',
-                                                                'pattern'          => '\\d{2}-\\d{2}-\\d{4}',
-                                                                'placeholder'      => 'DD-MM-YYYY',
+                                                                'data-date-format' => 'dd-mm-y',
+                                                                'pattern'          => '\\d{2}-\\d{2}-\\d{2}',
+                                                                'placeholder'      => 'DD-MM-YY',
                                                         ),
                                                 )
                                         );
@@ -1844,7 +1856,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_CPT' ) ) {
 							<td><input type="number" min="0" step="1" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][variation_id]" value="<?php echo esc_attr( $variation_id ); ?>" /></td>
 							<td><input type="number" min="0" step="1" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][qty_ordered]" value="<?php echo esc_attr( $qty_ordered ); ?>" /></td>
 							<td><input type="number" min="0" step="1" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][qty_allocated]" value="<?php echo esc_attr( $qty_alloc ); ?>" /></td>
-                                                                                                                <td><input type="text" class="short wc_input_date lpr-date-picker date-picker" data-type="date" data-date-format="dd-mm-yy" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][eta_override]" value="<?php echo esc_attr( $eta_override ); ?>" placeholder="DD-MM-YYYY" /></td>
+                                                                                                                <td><input type="text" class="short wc_input_date lpr-date-picker date-picker" data-type="date" data-date-format="dd-mm-y" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][eta_override]" value="<?php echo esc_attr( $eta_override ); ?>" placeholder="DD-MM-YY" /></td>
 							<td><input type="number" min="0" step="1" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][qty_received]" value="<?php echo esc_attr( $qty_recv ); ?>" /></td>
 							<td><button type="button" class="button link-delete lpr-remove-line"><?php echo esc_html__( 'Remove', 'lpr-backorder-allocator' ); ?></button></td>
 						</tr>
@@ -1885,7 +1897,7 @@ tr.innerHTML =
 '<td><input type="number" min="0" step="1" name="lpr_po_lines['+i+'][variation_id]" value="" /></td>'+
 '<td><input type="number" min="0" step="1" name="lpr_po_lines['+i+'][qty_ordered]" value="0" /></td>'+
 '<td><input type="number" min="0" step="1" name="lpr_po_lines['+i+'][qty_allocated]" value="0" /></td>'+
-'<td><input type="text" class="short wc_input_date lpr-date-picker date-picker" data-type="date" data-date-format="dd-mm-yy" name="lpr_po_lines['+i+'][eta_override]" value="" placeholder="DD-MM-YYYY" /></td>'+
+'<td><input type="text" class="short wc_input_date lpr-date-picker date-picker" data-type="date" data-date-format="dd-mm-y" name="lpr_po_lines['+i+'][eta_override]" value="" placeholder="DD-MM-YY" /></td>'+
 '<td><input type="number" min="0" step="1" name="lpr_po_lines['+i+'][qty_received]" value="0" /></td>'+
 '<td><button type="button" class="button link-delete lpr-remove-line"><?php echo esc_js( __( 'Remove', 'lpr-backorder-allocator' ) ); ?></button></td>';
 table.appendChild(tr);
@@ -3898,14 +3910,14 @@ if ( ! class_exists( __NAMESPACE__ . '\Requested_Delivery_Date_Box' ) ) {
                                         'id'                => 'lpr_requested_delivery',
                                         'name'              => 'lpr_requested_delivery',
                                         'type'              => 'text',
-                                        'label'             => __( 'Requested delivery date (d-m-Y)', 'lpr-backorder-allocator' ),
+                                        'label'             => __( 'Requested delivery date (d-m-y)', 'lpr-backorder-allocator' ),
                                         'class'             => 'short wc_input_date lpr-date-picker date-picker',
                                         'data_type'         => 'date',
                                         'value'             => lpr_allocator_sanitize_ymd( $value ),
                                         'custom_attributes' => array(
-                                                'data-date-format' => 'dd-mm-yy',
-                                                'pattern'          => '\\d{2}-\\d{2}-\\d{4}',
-                                                'placeholder'      => 'DD-MM-YYYY',
+                                                'data-date-format' => 'dd-mm-y',
+                                                'pattern'          => '\\d{2}-\\d{2}-\\d{2}',
+                                                'placeholder'      => 'DD-MM-YY',
                                         ),
                                 )
                         );
@@ -4136,7 +4148,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_Live_Product_UI' ) ) {
 							</td>
 							<td><input type="number" min="0" step="1" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][qty_ordered]" value="<?php echo esc_attr( (string) $qty_ordered ); ?>" /></td>
 							<td><input type="number" min="0" step="1" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][qty_allocated]" value="<?php echo esc_attr( (string) $qty_alloc ); ?>" /></td>
-                                                        <td><input type="text" class="short wc_input_date lpr-date-picker date-picker" data-type="date" data-date-format="dd-mm-yy" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][eta_override]" value="<?php echo esc_attr( $eta_override ); ?>" placeholder="DD-MM-YYYY" /></td>
+                                                        <td><input type="text" class="short wc_input_date lpr-date-picker date-picker" data-type="date" data-date-format="dd-mm-y" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][eta_override]" value="<?php echo esc_attr( $eta_override ); ?>" placeholder="DD-MM-YY" /></td>
 							<td><input type="number" min="0" step="1" name="lpr_po_lines[<?php echo esc_attr( $idx ); ?>][qty_received]" value="<?php echo esc_attr( (string) $qty_recv ); ?>" /></td>
 							<td><button type="button" class="button link-delete lpr-remove-line"><?php echo esc_html__( 'Remove', 'lpr-backorder-allocator' ); ?></button></td>
 						</tr>
@@ -4187,7 +4199,7 @@ if ( ! class_exists( __NAMESPACE__ . '\Supplier_PO_Live_Product_UI' ) ) {
 								'</td>' +
 								'<td><input type="number" min="0" step="1" name="lpr_po_lines['+i+'][qty_ordered]" value="0" /></td>' +
 								'<td><input type="number" min="0" step="1" name="lpr_po_lines['+i+'][qty_allocated]" value="0" /></td>' +
-'<td><input type="text" class="short wc_input_date lpr-date-picker date-picker" data-type="date" data-date-format="dd-mm-yy" name="lpr_po_lines['+i+'][eta_override]" value="" placeholder="DD-MM-YYYY" /></td>' +
+'<td><input type="text" class="short wc_input_date lpr-date-picker date-picker" data-type="date" data-date-format="dd-mm-y" name="lpr_po_lines['+i+'][eta_override]" value="" placeholder="DD-MM-YY" /></td>' +
 								'<td><input type="number" min="0" step="1" name="lpr_po_lines['+i+'][qty_received]" value="0" /></td>' +
 								'<td><button type="button" class="button link-delete lpr-remove-line"><?php echo esc_js( __( 'Remove', 'lpr-backorder-allocator' ) ); ?></button></td>' +
                                                         '</tr>';
@@ -9103,8 +9115,8 @@ if ( ! class_exists( __NAMESPACE__ . '\Backordered_Products_Page' ) ) {
 												<input type="text" name="supplier_name" />
 											</label>
 											<label>
-                                                                                                <?php echo esc_html__( 'ETA (d-m-Y)', 'lpr-backorder-allocator' ); ?>
-                                                                                                <input type="text" class="short wc_input_date lpr-date-picker date-picker" data-type="date" data-date-format="dd-mm-yy" name="eta_ymd" placeholder="DD-MM-YYYY" pattern="\d{2}-\d{2}-\d{4}" />
+                                                                                                <?php echo esc_html__( 'ETA (d-m-y)', 'lpr-backorder-allocator' ); ?>
+                                                                                                <input type="text" class="short wc_input_date lpr-date-picker date-picker" data-type="date" data-date-format="dd-mm-y" name="eta_ymd" placeholder="DD-MM-YY" pattern="\d{2}-\d{2}-\d{2}" />
                                                                                         </label>
 											<button type="submit" class="button button-secondary"><?php echo esc_html__( 'Add to PO Draft', 'lpr-backorder-allocator' ); ?></button>
 										</form>
