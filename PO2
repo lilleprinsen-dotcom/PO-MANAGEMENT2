@@ -1003,16 +1003,11 @@ function lpr_allocator_enqueue_datepicker_assets(): void {
         }
 
         wp_enqueue_style( 'woocommerce_admin_styles' );
-        wp_add_inline_style(
-                'woocommerce_admin_styles',
-                '#ui-datepicker-div, .ui-datepicker { background: #fff; }\n'
-                . '#ui-datepicker-div .ui-datepicker-header, .ui-datepicker .ui-datepicker-header { background: #fff; }'
-        );
         wp_enqueue_script( 'wc-admin-meta-boxes' );
         wp_enqueue_script( 'jquery-ui-datepicker' );
 
 	if ( function_exists( 'wc_enqueue_js' ) ) {
-                wc_enqueue_js( "jQuery(function($){\n\tvar selector = 'input.lpr-date-picker';\n\tfunction ensureAllocatorDateFormat($input){\n\t\tvar format = $input.data('date-format') || 'dd-mm-yy';\n\t\t$input.data('date-format', format);\n\t\tif ( $input.hasClass('hasDatepicker') ) {\n\t\t\t$input.datepicker('option', 'dateFormat', format);\n\t\t}\n\t}\n\tfunction syncAllocatorDatepickers(context){\n\t\tvar $ctx = context ? $(context) : $(document.body);\n\t\t$ctx.find(selector).each(function(){\n\t\t\tensureAllocatorDateFormat($(this));\n\t\t});\n\t}\n\t$(selector).addClass('date-picker');\n\t$(document.body).on('wc-init-datepickers', function(event, context){\n\t\tsyncAllocatorDatepickers(context);\n\t});\n\t$( document.body ).trigger( 'wc-init-datepickers' );\n\tsyncAllocatorDatepickers(document);\n});" );
+                wc_enqueue_js( "jQuery(function($){\n\tvar selector = 'input.lpr-date-picker';\n\tfunction applyAllocatorDatepicker(context){\n\t\tvar $ctx = context ? $(context) : $(document.body);\n\t\t$ctx.find(selector).each(function(){\n\t\t\tvar $input = $(this);\n\t\t\tvar format = $input.data('date-format') || 'dd-mm-yy';\n\t\t\t$input.data('date-format', format);\n\t\t\t$input.addClass('date-picker');\n\t\t\tif ( $input.wc_datepicker ) {\n\t\t\t\t$input.wc_datepicker({ dateFormat: format });\n\t\t\t} else if ( $input.datepicker ) {\n\t\t\t\t$input.datepicker('option', 'dateFormat', format);\n\t\t\t}\n\t\t});\n\t}\n\t$(document.body).on('wc-init-datepickers', function(event, context){\n\t\tapplyAllocatorDatepicker(context);\n\t});\n\t$( document.body ).trigger( 'wc-init-datepickers' );\n\tapplyAllocatorDatepicker(document);\n});" );
         }
 
 	$enqueued = true;
