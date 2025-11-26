@@ -1010,11 +1010,11 @@ function lpr_allocator_enqueue_datepicker_assets(): void {
         wp_enqueue_style( 'woocommerce_admin_styles' );
         wp_add_inline_style(
                 'woocommerce_admin_styles',
-                '#ui-datepicker-div, .ui-datepicker { background: #fff; }\n'
-                . '#ui-datepicker-div .ui-datepicker-header, .ui-datepicker .ui-datepicker-header { background: #fff; }\n'
-                . '.ui-datepicker .ui-state-default { background: #fff; }\n'
+                '#ui-datepicker-div, .ui-datepicker { background: #fff !important; }\n'
+                . '#ui-datepicker-div .ui-datepicker-header, .ui-datepicker .ui-datepicker-header { background: #fff !important; color: #1d2327; }\n'
+                . '.ui-datepicker .ui-state-default { background: #fff !important; color: #1d2327; }\n'
                 . '#ui-datepicker-div, #ui-datepicker-div .ui-datepicker-calendar, .ui-datepicker.ui-widget-content {\n'
-                . '  background-color: #fff;\n'
+                . '  background-color: #fff !important;\n'
                 . '  border: 1px solid #c3c4c7;\n'
                 . '  box-shadow: 0 4px 12px rgba(0,0,0,0.12);\n'
                 . '  color: #1d2327;\n'
